@@ -118,6 +118,12 @@ def test_page_contains_responsive_shell(client):
     assert b'id="workspace"' in page.data
     assert b'id="boot-screen"' in page.data
     assert b'id="auth-screen" class="auth-screen hidden"' in page.data
+    assert b'rel="manifest"' in page.data
+    assert b'rel="apple-touch-icon" sizes="180x180"' in page.data
+    assert b'icons/favicon.ico' in page.data
+    assert b'icons/icon-192x192.png' in page.data
+    assert b'styles.css?v=' in page.data
+    assert b'app.js?v=' in page.data
     assert b'id="note-title-input"' not in page.data
     assert b'class="pin-button-label"' in page.data
     assert b'class="privacy-bar"' not in page.data
@@ -126,6 +132,9 @@ def test_page_contains_responsive_shell(client):
     assert b"max-width: 760px" in css.data
     assert b'data-mobile-view="editor"' in css.data
     assert b"grid-template-columns: 34px minmax(0, 1fr) auto" in css.data
+    assert b"appearance: none" in css.data
+    assert b"max-width: 380px" in css.data
+    assert b"width: 80px; max-width: 80px" in css.data
     assert b"touch-action: pan-x" in css.data
     assert b".swipe-delete-button" in css.data
     assert b"touch-action: pan-y" in css.data
@@ -143,3 +152,31 @@ def test_page_contains_responsive_shell(client):
     assert b'data-swipe-delete' in script.data
     assert b'pointerdown' in script.data
     assert b'pointermove' in script.data
+    assert b'class="pin-button-icon"' in page.data
+    assert b'aria-label' in page.data
+
+
+def test_cross_platform_icons_and_manifest(client):
+    manifest_response = client.get("/static/site.webmanifest")
+    assert manifest_response.status_code == 200
+    manifest = json.loads(manifest_response.data)
+    assert manifest["name"] == "MyNote 私有便签"
+    assert manifest["theme_color"] == "#f2c500"
+    assert {icon["sizes"] for icon in manifest["icons"]} >= {"192x192", "512x512"}
+    assert any("maskable" in icon.get("purpose", "") for icon in manifest["icons"])
+
+    for path in (
+        "/static/icons/favicon.ico",
+        "/static/icons/favicon-16x16.png",
+        "/static/icons/favicon-32x32.png",
+        "/static/icons/apple-touch-icon.png",
+        "/static/icons/apple-touch-icon-167x167.png",
+        "/static/icons/apple-touch-icon-152x152.png",
+        "/static/icons/icon-192x192.png",
+        "/static/icons/icon-512x512.png",
+        "/static/icons/icon-maskable-512x512.png",
+        "/static/icons/mstile-150x150.png",
+    ):
+        response = client.get(path)
+        assert response.status_code == 200
+        assert response.data

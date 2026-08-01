@@ -323,7 +323,7 @@ function updatePinButton(pinned) {
   els.pin.classList.toggle("active", pinned);
   els.pin.setAttribute("aria-pressed", String(pinned));
   els.pin.title = pinned ? "取消置顶" : "置顶";
-  $(".pin-button-icon", els.pin).textContent = pinned ? "◆" : "♧";
+  els.pin.setAttribute("aria-label", pinned ? "取消置顶" : "置顶");
   $(".pin-button-label", els.pin).textContent = pinned ? "已置顶" : "置顶";
 }
 
