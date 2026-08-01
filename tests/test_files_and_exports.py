@@ -122,6 +122,8 @@ def test_page_contains_responsive_shell(client):
     assert b'rel="apple-touch-icon" sizes="180x180"' in page.data
     assert b'icons/favicon.ico' in page.data
     assert b'icons/icon-192x192.png' in page.data
+    assert b'styles.css?v=' in page.data
+    assert b'app.js?v=' in page.data
     assert b'id="note-title-input"' not in page.data
     assert b'class="pin-button-label"' in page.data
     assert b'class="privacy-bar"' not in page.data
@@ -130,6 +132,9 @@ def test_page_contains_responsive_shell(client):
     assert b"max-width: 760px" in css.data
     assert b'data-mobile-view="editor"' in css.data
     assert b"grid-template-columns: 34px minmax(0, 1fr) auto" in css.data
+    assert b"appearance: none" in css.data
+    assert b"max-width: 380px" in css.data
+    assert b"width: 80px; max-width: 80px" in css.data
     assert b"touch-action: pan-x" in css.data
     assert b".swipe-delete-button" in css.data
     assert b"touch-action: pan-y" in css.data
@@ -147,6 +152,8 @@ def test_page_contains_responsive_shell(client):
     assert b'data-swipe-delete' in script.data
     assert b'pointerdown' in script.data
     assert b'pointermove' in script.data
+    assert b'class="pin-button-icon"' in page.data
+    assert b'aria-label' in page.data
 
 
 def test_cross_platform_icons_and_manifest(client):

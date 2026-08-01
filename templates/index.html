@@ -17,7 +17,7 @@
   <link rel="apple-touch-icon" sizes="180x180" href="{{ url_for('static', filename='icons/apple-touch-icon.png') }}">
   <link rel="apple-touch-icon" sizes="167x167" href="{{ url_for('static', filename='icons/apple-touch-icon-167x167.png') }}">
   <link rel="apple-touch-icon" sizes="152x152" href="{{ url_for('static', filename='icons/apple-touch-icon-152x152.png') }}">
-  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css', v=asset_version('styles.css')) }}">
 </head>
 <body>
   <noscript><div class="noscript">此应用需要启用 JavaScript。</div></noscript>
@@ -134,10 +134,18 @@
                 <span>分组</span>
                 <select id="editor-group-select"></select>
               </label>
-              <button id="pin-button" class="icon-button" type="button" title="置顶" aria-pressed="false">
-                <span class="pin-button-icon" aria-hidden="true">♧</span><span class="pin-button-label">置顶</span>
+              <button id="pin-button" class="icon-button" type="button" title="置顶" aria-label="置顶" aria-pressed="false">
+                <span class="pin-button-icon" aria-hidden="true">
+                  <svg class="editor-action-icon" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5v6h2v-6h5v-2l-2-2z"/>
+                  </svg>
+                </span><span class="pin-button-label">置顶</span>
               </button>
-              <button id="delete-note-button" class="icon-button danger-hover" type="button" title="移到回收站">♲</button>
+              <button id="delete-note-button" class="icon-button danger-hover" type="button" title="移到回收站" aria-label="移到回收站">
+                <svg class="editor-action-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5"/>
+                </svg>
+              </button>
             </div>
             <div class="editor-actions trash-actions hidden">
               <button id="restore-note-button" class="secondary-button" type="button">恢复</button>
@@ -237,6 +245,6 @@
   </dialog>
 
   <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
-  <script src="{{ url_for('static', filename='app.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='app.js', v=asset_version('app.js')) }}" defer></script>
 </body>
 </html>

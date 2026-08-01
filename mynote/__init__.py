@@ -50,6 +50,15 @@ def create_app(test_config: dict | None = None) -> Flask:
     if test_config:
         app.config.update(test_config)
 
+    def asset_version(filename: str) -> str:
+        asset_path = Path(app.static_folder) / filename
+        try:
+            return f"{asset_path.stat().st_mtime_ns:x}"
+        except OSError:
+            return "missing"
+
+    app.jinja_env.globals["asset_version"] = asset_version
+
     app.teardown_appcontext(close_db)
     app.register_blueprint(pages)
     app.register_blueprint(api)
