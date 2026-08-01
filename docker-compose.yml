@@ -1,0 +1,22 @@
+services:
+  mynote:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mynote
+    restart: unless-stopped
+    init: true
+    ports:
+      - "5055:5000"
+    environment:
+      TZ: Asia/Shanghai
+      MYNOTE_INSTANCE_PATH: /app/instance
+    volumes:
+      - ./instance:/app/instance
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -1,0 +1,24 @@
+[project]
+name = "mynote"
+version = "1.0.0"
+description = "A private, family-friendly notes app built with Flask and SQLite"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "bleach>=6.2.0",
+    "flask>=3.1.0",
+    "markdown>=3.7",
+    "waitress>=3.0.2",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.5",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.uv]
+package = false

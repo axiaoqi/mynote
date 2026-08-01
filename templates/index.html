@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#ffffff">
+  <meta name="csrf-token" content="{{ csrf_token }}">
+  <title>MyNote · 私有便签</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+  <noscript><div class="noscript">此应用需要启用 JavaScript。</div></noscript>
+
+  <section id="boot-screen" class="boot-screen" aria-label="正在打开便签">
+    <div class="boot-mark">✦</div>
+    <p>正在打开 MyNote…</p>
+  </section>
+
+  <section id="auth-screen" class="auth-screen hidden" aria-label="账号登录">
+    <div class="auth-card">
+      <div class="auth-brand">
+        <div class="brand-mark" aria-hidden="true">✦</div>
+        <div>
+          <h1>MyNote</h1>
+          <p>属于你和家人的私有便签</p>
+        </div>
+      </div>
+      <div class="auth-tabs" role="tablist">
+        <button id="login-tab" class="auth-tab active" type="button" role="tab">登录</button>
+        <button id="register-tab" class="auth-tab" type="button" role="tab">注册</button>
+      </div>
+      <form id="login-form" class="auth-form">
+        <label>用户名<input name="username" autocomplete="username" minlength="3" maxlength="32" required></label>
+        <label>密码<input name="password" type="password" autocomplete="current-password" minlength="8" maxlength="128" required></label>
+        <p class="form-error" aria-live="polite"></p>
+        <button class="primary-button wide" type="submit">登录</button>
+      </form>
+      <form id="register-form" class="auth-form hidden">
+        <label>用户名<input name="username" autocomplete="username" minlength="3" maxlength="32" placeholder="3–32 位" required></label>
+        <label>昵称<input name="display_name" autocomplete="nickname" maxlength="40" placeholder="家人看到的名字"></label>
+        <label>密码<input name="password" type="password" autocomplete="new-password" minlength="8" maxlength="128" placeholder="至少 8 位" required></label>
+        <p class="form-error" aria-live="polite"></p>
+        <button class="primary-button wide" type="submit">创建账号</button>
+      </form>
+      <p id="first-user-tip" class="auth-tip">首位注册者将成为家庭管理员。</p>
+    </div>
+  </section>
+
+  <main id="app" class="app hidden">
+    <div id="workspace" class="workspace" data-mobile-view="list">
+      <aside class="sidebar pane" aria-label="便签导航">
+        <div class="sidebar-brand">
+          <span class="mini-mark">✦</span>
+          <span>MyNote</span>
+          <button class="icon-button mobile-only" id="sidebar-close" title="关闭导航">×</button>
+        </div>
+
+        <nav class="main-nav">
+          <button class="nav-item active" data-view="home" type="button">
+            <span class="nav-icon">⌂</span><span>首页</span>
+          </button>
+        </nav>
+
+        <div class="section-heading">
+          <span>分组</span>
+          <button id="new-group-button" class="tiny-button" type="button" title="新建分组">＋</button>
+        </div>
+        <div id="group-list" class="group-list" aria-label="便签分组"></div>
+
+        <div class="sidebar-spacer"></div>
+        <button class="nav-item trash-nav" data-view="trash" type="button">
+          <span class="nav-icon">♲</span><span>回收站</span>
+        </button>
+
+        <button id="user-menu-button" class="user-card" type="button">
+          <span id="user-avatar" class="avatar"></span>
+          <span class="user-copy"><strong id="user-display-name"></strong><small id="user-name"></small></span>
+          <span aria-hidden="true">⌄</span>
+        </button>
+      </aside>
+
+      <section class="note-list-pane pane" aria-label="便签列表">
+        <header class="list-header">
+          <div class="list-heading-row">
+            <button id="open-sidebar" class="icon-button mobile-only" type="button" title="打开导航">☰</button>
+            <h2 id="list-title">首页</h2>
+            <span id="list-count" class="count-badge">0</span>
+            <button id="empty-trash-button" class="text-button danger hidden" type="button">清空</button>
+            <button id="new-note-button" class="new-note-button" type="button"><span>✎</span> 新建</button>
+          </div>
+          <label class="search-box">
+            <span aria-hidden="true">⌕</span>
+            <input id="search-input" type="search" placeholder="搜索便签" maxlength="100">
+            <button id="clear-search" class="search-clear hidden" type="button" aria-label="清除搜索">×</button>
+          </label>
+        </header>
+        <div id="note-list" class="note-list"></div>
+        <div id="note-list-empty" class="list-empty hidden">
+          <div class="empty-glyph">▱</div>
+          <strong>这里还没有便签</strong>
+          <span>点击“新建”记录第一条内容</span>
+        </div>
+      </section>
+
+      <section class="editor-pane pane" aria-label="便签编辑器">
+        <div id="editor-empty" class="editor-empty">
+          <div class="empty-paper">✦</div>
+          <h2>选择一条便签开始编辑</h2>
+          <p>内容会自动保存到你的私有数据库</p>
+          <button id="empty-new-note" class="primary-button" type="button">新建便签</button>
+        </div>
+
+        <div id="editor-shell" class="editor-shell hidden">
+          <header class="editor-header">
+            <button id="back-to-list" class="icon-button mobile-only" type="button" title="返回列表">‹</button>
+            <div class="editor-meta">
+              <span id="save-state" class="save-state">已保存</span>
+              <span class="meta-dot">·</span>
+              <time id="updated-time"></time>
+            </div>
+            <div class="editor-actions normal-actions">
+              <label class="group-select-wrap" title="移动到分组">
+                <span>分组</span>
+                <select id="editor-group-select"></select>
+              </label>
+              <button id="pin-button" class="icon-button" type="button" title="置顶" aria-pressed="false">
+                <span class="pin-button-icon" aria-hidden="true">♧</span><span class="pin-button-label">置顶</span>
+              </button>
+              <button id="delete-note-button" class="icon-button danger-hover" type="button" title="移到回收站">♲</button>
+            </div>
+            <div class="editor-actions trash-actions hidden">
+              <button id="restore-note-button" class="secondary-button" type="button">恢复</button>
+              <button id="permanent-delete-button" class="secondary-button danger" type="button">永久删除</button>
+            </div>
+          </header>
+
+          <div id="toolbar" class="toolbar" role="toolbar" aria-label="文字格式">
+            <button type="button" data-cmd="undo" title="撤销">↶</button>
+            <button type="button" data-cmd="redo" title="重做">↷</button>
+            <span class="toolbar-divider"></span>
+            <button type="button" data-cmd="formatBlock" data-value="h2" title="标题">H</button>
+            <button type="button" data-cmd="bold" title="粗体"><b>B</b></button>
+            <button type="button" data-cmd="italic" title="斜体"><i>I</i></button>
+            <button type="button" data-cmd="underline" title="下划线"><u>U</u></button>
+            <button type="button" data-cmd="strikeThrough" title="删除线"><s>S</s></button>
+            <span class="toolbar-divider"></span>
+            <button type="button" data-cmd="insertUnorderedList" title="无序列表">•≡</button>
+            <button type="button" data-cmd="insertOrderedList" title="有序列表">1≡</button>
+            <button type="button" data-special="checklist" title="清单">☑</button>
+            <button type="button" data-cmd="formatBlock" data-value="blockquote" title="引用">❞</button>
+            <button type="button" data-special="link" title="链接">⌁</button>
+            <button type="button" data-special="image" title="插入图片">▧</button>
+            <button type="button" data-cmd="removeFormat" title="清除格式">Tx</button>
+          </div>
+          <input id="image-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden>
+
+          <div class="editor-document">
+            <div id="note-content" class="note-content" contenteditable="true" role="textbox" aria-multiline="true" data-placeholder="开始记录此刻的想法…"></div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <dialog id="input-dialog" class="modal small-modal">
+    <form method="dialog" id="input-dialog-form">
+      <div class="modal-header"><h3 id="input-dialog-title">新建分组</h3><button value="cancel" class="dialog-close" aria-label="关闭">×</button></div>
+      <label id="input-dialog-label">名称<input id="input-dialog-field" maxlength="50" required></label>
+      <p id="input-dialog-error" class="form-error"></p>
+      <div class="modal-actions"><button value="cancel" class="secondary-button">取消</button><button id="input-dialog-confirm" value="default" class="primary-button">确定</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="confirm-dialog" class="modal small-modal">
+    <form method="dialog">
+      <div class="modal-header"><h3 id="confirm-title">确认操作</h3><button value="cancel" class="dialog-close" aria-label="关闭">×</button></div>
+      <p id="confirm-message" class="confirm-message"></p>
+      <div class="modal-actions"><button value="cancel" class="secondary-button">取消</button><button id="confirm-button" value="confirm" class="primary-button danger-fill">确认</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="settings-dialog" class="modal settings-modal">
+    <div class="modal-header"><h3>账号与数据</h3><button id="settings-close" class="dialog-close" type="button" aria-label="关闭">×</button></div>
+    <div class="settings-body">
+      <section class="settings-section">
+        <h4>个人资料</h4>
+        <form id="profile-form" class="settings-form">
+          <label>昵称<input name="display_name" maxlength="40" required></label>
+          <button class="secondary-button" type="submit">保存昵称</button>
+        </form>
+      </section>
+      <section class="settings-section">
+        <h4>修改密码</h4>
+        <form id="password-form" class="settings-form password-grid">
+          <label>当前密码<input name="current_password" type="password" autocomplete="current-password" required></label>
+          <label>新密码<input name="new_password" type="password" autocomplete="new-password" minlength="8" required></label>
+          <button class="secondary-button" type="submit">更新密码</button>
+        </form>
+      </section>
+      <section class="settings-section">
+        <h4>导入与备份</h4>
+        <p>支持 TXT、Markdown、JSON 和 MyNote ZIP 备份。</p>
+        <div class="settings-buttons">
+          <button id="import-button" class="secondary-button" type="button">导入文件</button>
+          <input id="import-input" type="file" accept=".txt,.md,.markdown,.json,.zip" hidden>
+          <a class="secondary-button link-button" href="/api/export/markdown">导出 Markdown</a>
+          <a class="secondary-button link-button" href="/api/export/json">导出 JSON</a>
+          <a class="primary-button link-button" href="/api/export/backup">完整 ZIP 备份</a>
+        </div>
+      </section>
+      <section id="admin-section" class="settings-section hidden">
+        <h4>家庭账号管理</h4>
+        <label class="switch-row">允许新用户注册<input id="registration-toggle" type="checkbox"><span class="switch"></span></label>
+        <div id="admin-user-list" class="admin-user-list"></div>
+      </section>
+      <section class="settings-section logout-section">
+        <button id="logout-button" class="secondary-button danger" type="button">退出登录</button>
+      </section>
+    </div>
+  </dialog>
+
+  <dialog id="conflict-dialog" class="modal small-modal">
+    <div class="modal-header"><h3>发现其他设备的修改</h3></div>
+    <p class="confirm-message">服务器上的版本比当前页面更新。请选择载入服务器版本，或把本机内容保存成一条新便签。</p>
+    <div class="modal-actions"><button id="conflict-load" class="secondary-button" type="button">载入服务器版本</button><button id="conflict-copy" class="primary-button" type="button">保存为副本</button></div>
+  </dialog>
+
+  <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
+  <script src="{{ url_for('static', filename='app.js') }}" defer></script>
+</body>
+</html>
