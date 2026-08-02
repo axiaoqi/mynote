@@ -66,6 +66,13 @@ def _csrf_token() -> str:
     return session["csrf_token"]
 
 
+def _start_authenticated_session(user_id: int) -> None:
+    session.clear()
+    session.permanent = True
+    session["user_id"] = user_id
+    session["csrf_token"] = secrets.token_urlsafe(32)
+
+
 @pages.get("/")
 def index():
     return render_template("index.html", csrf_token=_csrf_token())
@@ -151,7 +158,6 @@ def session_status():
     response = {
         "authenticated": False,
         "registration_open": setting("registration_open", "1") == "1",
-        "csrf_token": _csrf_token(),
     }
     user_id = session.get("user_id")
     if user_id:
@@ -160,9 +166,15 @@ def session_status():
             (user_id,),
         ).fetchone()
         if user and user["is_active"]:
+            # Upgrade cookies created by versions that used browser-session
+            # cookies. Marking the session permanent causes Flask to resend it
+            # with the configured expiry date.
+            if not session.permanent:
+                session.permanent = True
             response.update(authenticated=True, user=_user_json(user))
         else:
-            session.pop("user_id", None)
+            session.clear()
+    response["csrf_token"] = _csrf_token()
     return jsonify(response)
 
 
@@ -190,9 +202,7 @@ def register():
         db.commit()
     except sqlite3.IntegrityError:
         return jsonify(error="该用户名已被使用", code="username_taken"), 409
-    session.clear()
-    session["user_id"] = cursor.lastrowid
-    session["csrf_token"] = secrets.token_urlsafe(32)
+    _start_authenticated_session(cursor.lastrowid)
     user = db.execute(
         "SELECT id, username, display_name, is_admin, is_active, created_at FROM users WHERE id = ?",
         (cursor.lastrowid,),
@@ -210,9 +220,7 @@ def login():
         return jsonify(error="用户名或密码错误", code="invalid_credentials"), 401
     if not user["is_active"]:
         return jsonify(error="账号已被停用，请联系管理员", code="account_inactive"), 403
-    session.clear()
-    session["user_id"] = user["id"]
-    session["csrf_token"] = secrets.token_urlsafe(32)
+    _start_authenticated_session(user["id"])
     return jsonify(user=_user_json(user), csrf_token=session["csrf_token"])
 
 
