@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import secrets
+from datetime import timedelta
 from pathlib import Path
 
 from flask import Flask
@@ -43,6 +44,8 @@ def create_app(test_config: dict | None = None) -> Flask:
         UPLOAD_FOLDER=str(instance_path / "uploads"),
         MAX_CONTENT_LENGTH=64 * 1024 * 1024,
         MAX_IMAGE_SIZE=10 * 1024 * 1024,
+        PERMANENT_SESSION_LIFETIME=timedelta(days=30),
+        SESSION_REFRESH_EACH_REQUEST=True,
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE="Lax",
         JSON_AS_ASCII=False,
