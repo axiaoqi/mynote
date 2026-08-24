@@ -23,6 +23,13 @@ CREATE TABLE IF NOT EXISTS app_settings (
     value TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS login_attempts (
+    ip_address TEXT PRIMARY KEY,
+    failure_count INTEGER NOT NULL DEFAULT 0,
+    last_failed_at TEXT NOT NULL,
+    blocked_until TEXT
+);
+
 CREATE TABLE IF NOT EXISTS note_groups (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -65,6 +72,8 @@ CREATE INDEX IF NOT EXISTS idx_notes_user_group
 ON notes(user_id, group_id, is_deleted);
 CREATE INDEX IF NOT EXISTS idx_attachments_note
 ON attachments(note_id);
+CREATE INDEX IF NOT EXISTS idx_login_attempts_last_failed
+ON login_attempts(last_failed_at);
 """
 
 

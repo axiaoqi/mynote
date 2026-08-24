@@ -3,13 +3,14 @@ from __future__ import annotations
 import html
 import io
 import json
+import math
 import mimetypes
 import re
 import secrets
 import sqlite3
 import uuid
 import zipfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path, PurePosixPath
 
@@ -58,6 +59,93 @@ def _matches_image_signature(raw: bytes, mime_type: str) -> bool:
 
 def utcnow() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _parse_utc(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def _client_ip() -> str:
+    # Do not trust X-Forwarded-For unless a known reverse proxy is explicitly
+    # configured at the WSGI layer. Client-supplied forwarding headers are easy
+    # to spoof and would make the rate limit ineffective.
+    return request.remote_addr or "unknown"
+
+
+def _blocked_seconds(ip_address: str) -> int:
+    db = get_db()
+    row = db.execute(
+        "SELECT failure_count, last_failed_at, blocked_until FROM login_attempts WHERE ip_address = ?",
+        (ip_address,),
+    ).fetchone()
+    if not row:
+        return 0
+
+    now = datetime.now(timezone.utc)
+    blocked_until = _parse_utc(row["blocked_until"]) if row["blocked_until"] else None
+    last_failed_at = _parse_utc(row["last_failed_at"])
+    failure_window = timedelta(seconds=current_app.config["LOGIN_FAILURE_WINDOW_SECONDS"])
+    if blocked_until and blocked_until > now:
+        return max(1, math.ceil((blocked_until - now).total_seconds()))
+    if blocked_until or now - last_failed_at > failure_window:
+        db.execute("DELETE FROM login_attempts WHERE ip_address = ?", (ip_address,))
+        db.commit()
+    return 0
+
+
+def _record_login_failure(ip_address: str) -> int:
+    db = get_db()
+    now = datetime.now(timezone.utc)
+    failure_window = timedelta(seconds=current_app.config["LOGIN_FAILURE_WINDOW_SECONDS"])
+    cleanup_before = (now - timedelta(days=1)).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    db.execute("BEGIN IMMEDIATE")
+    db.execute(
+        "DELETE FROM login_attempts WHERE last_failed_at < ? AND (blocked_until IS NULL OR blocked_until < ?)",
+        (cleanup_before, utcnow()),
+    )
+    row = db.execute(
+        "SELECT failure_count, last_failed_at FROM login_attempts WHERE ip_address = ?",
+        (ip_address,),
+    ).fetchone()
+    if row and now - _parse_utc(row["last_failed_at"]) <= failure_window:
+        failure_count = row["failure_count"] + 1
+    else:
+        failure_count = 1
+
+    blocked_until = None
+    if failure_count >= current_app.config["LOGIN_MAX_FAILURES"]:
+        blocked_until = now + timedelta(seconds=current_app.config["LOGIN_BLOCK_SECONDS"])
+    db.execute(
+        "INSERT INTO login_attempts(ip_address, failure_count, last_failed_at, blocked_until) VALUES (?, ?, ?, ?) "
+        "ON CONFLICT(ip_address) DO UPDATE SET failure_count = excluded.failure_count, "
+        "last_failed_at = excluded.last_failed_at, blocked_until = excluded.blocked_until",
+        (
+            ip_address,
+            failure_count,
+            now.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+            blocked_until.isoformat(timespec="milliseconds").replace("+00:00", "Z") if blocked_until else None,
+        ),
+    )
+    db.commit()
+    return math.ceil(current_app.config["LOGIN_BLOCK_SECONDS"]) if blocked_until else 0
+
+
+def _clear_login_failures(ip_address: str) -> None:
+    db = get_db()
+    db.execute("DELETE FROM login_attempts WHERE ip_address = ?", (ip_address,))
+    db.commit()
+
+
+def _login_blocked_response(seconds: int):
+    minutes = max(1, math.ceil(seconds / 60))
+    response = jsonify(
+        error=f"登录失败次数过多，此 IP 已暂时限制登录，请约 {minutes} 分钟后再试",
+        code="login_rate_limited",
+        retry_after=seconds,
+    )
+    response.status_code = 429
+    response.headers["Retry-After"] = str(seconds)
+    return response
 
 
 def _csrf_token() -> str:
@@ -215,11 +303,21 @@ def login():
     data = request.get_json(silent=True) or {}
     username = str(data.get("username", "")).strip()
     password = str(data.get("password", ""))
+    ip_address = _client_ip()
+    blocked_seconds = _blocked_seconds(ip_address)
+    if blocked_seconds:
+        return _login_blocked_response(blocked_seconds)
     user = get_db().execute("SELECT * FROM users WHERE username = ? COLLATE NOCASE", (username,)).fetchone()
-    if not user or not check_password_hash(user["password_hash"], password):
+    password_hash = user["password_hash"] if user else current_app.config["DUMMY_PASSWORD_HASH"]
+    password_matches = check_password_hash(password_hash, password)
+    if not user or not password_matches:
+        blocked_seconds = _record_login_failure(ip_address)
+        if blocked_seconds:
+            return _login_blocked_response(blocked_seconds)
         return jsonify(error="用户名或密码错误", code="invalid_credentials"), 401
     if not user["is_active"]:
         return jsonify(error="账号已被停用，请联系管理员", code="account_inactive"), 403
+    _clear_login_failures(ip_address)
     _start_authenticated_session(user["id"])
     return jsonify(user=_user_json(user), csrf_token=session["csrf_token"])
 

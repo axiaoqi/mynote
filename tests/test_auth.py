@@ -111,6 +111,78 @@ def test_logout_deletes_persistent_session_cookie(client):
     assert protected.get_json()["code"] == "login_required"
 
 
+def login_request(client, username, password, ip_address="127.0.0.1"):
+    return client.post(
+        "/api/login",
+        json={"username": username, "password": password},
+        headers={"X-CSRF-Token": csrf(client)},
+        environ_overrides={"REMOTE_ADDR": ip_address},
+    )
+
+
+def test_three_failed_logins_temporarily_block_ip(app, client):
+    assert register(client).status_code == 201
+    assert api_request(client, "POST", "/api/logout").status_code == 200
+
+    assert login_request(client, "owner", "wrong-password").status_code == 401
+    assert login_request(client, "owner", "wrong-password").status_code == 401
+    blocked = login_request(client, "owner", "wrong-password")
+    assert blocked.status_code == 429
+    assert blocked.get_json()["code"] == "login_rate_limited"
+    assert blocked.get_json()["retry_after"] > 0
+    assert int(blocked.headers["Retry-After"]) > 0
+
+    still_blocked = login_request(client, "owner", "password123")
+    assert still_blocked.status_code == 429
+
+    other_ip = login_request(client, "owner", "password123", "192.0.2.20")
+    assert other_ip.status_code == 200
+
+    with app.app_context():
+        row = get_db().execute(
+            "SELECT failure_count, blocked_until FROM login_attempts WHERE ip_address = '127.0.0.1'"
+        ).fetchone()
+        assert row["failure_count"] == 3
+        assert row["blocked_until"] is not None
+
+
+def test_successful_login_clears_failed_attempts(app, client):
+    assert register(client).status_code == 201
+    assert api_request(client, "POST", "/api/logout").status_code == 200
+
+    assert login_request(client, "owner", "wrong-password").status_code == 401
+    assert login_request(client, "owner", "wrong-password").status_code == 401
+    assert login_request(client, "owner", "password123").status_code == 200
+    assert api_request(client, "POST", "/api/logout").status_code == 200
+    assert login_request(client, "owner", "wrong-password").status_code == 401
+
+    with app.app_context():
+        row = get_db().execute(
+            "SELECT failure_count FROM login_attempts WHERE ip_address = '127.0.0.1'"
+        ).fetchone()
+        assert row["failure_count"] == 1
+
+
+def test_expired_ip_block_is_removed(app, client):
+    assert register(client).status_code == 201
+    assert api_request(client, "POST", "/api/logout").status_code == 200
+    assert login_request(client, "owner", "wrong-password").status_code == 401
+    assert login_request(client, "owner", "wrong-password").status_code == 401
+    assert login_request(client, "owner", "wrong-password").status_code == 429
+
+    with app.app_context():
+        get_db().execute(
+            "UPDATE login_attempts SET blocked_until = '2000-01-01T00:00:00.000Z' WHERE ip_address = '127.0.0.1'"
+        )
+        get_db().commit()
+
+    assert login_request(client, "owner", "password123").status_code == 200
+    with app.app_context():
+        assert get_db().execute(
+            "SELECT 1 FROM login_attempts WHERE ip_address = '127.0.0.1'"
+        ).fetchone() is None
+
+
 def test_admin_can_close_registration_and_disable_member(app, client):
     assert register(client).status_code == 201
     second = app.test_client()

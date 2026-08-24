@@ -18,11 +18,15 @@ const state = {
   registrationOpen: true,
 };
 
+let openGroupActionId = null;
+let openGroupActionButton = null;
+
 const els = {
   boot: $("#boot-screen"), auth: $("#auth-screen"), app: $("#app"), workspace: $("#workspace"),
   loginTab: $("#login-tab"), registerTab: $("#register-tab"),
   loginForm: $("#login-form"), registerForm: $("#register-form"), firstUserTip: $("#first-user-tip"),
   groups: $("#group-list"), listTitle: $("#list-title"), listCount: $("#list-count"),
+  groupActionMenu: $("#group-action-menu"), groupMenuRename: $("#group-menu-rename"), groupMenuDelete: $("#group-menu-delete"),
   noteList: $("#note-list"), listEmpty: $("#note-list-empty"), search: $("#search-input"), clearSearch: $("#clear-search"),
   emptyTrash: $("#empty-trash-button"), editorEmpty: $("#editor-empty"), editorShell: $("#editor-shell"),
   content: $("#note-content"), saveState: $("#save-state"),
@@ -205,17 +209,52 @@ async function loadGroups() {
 }
 
 function renderGroups() {
+  closeGroupActionMenu();
   els.groups.innerHTML = state.groups.map(group => `
     <div class="group-row" data-group-row="${group.id}">
       <button class="nav-item ${String(state.currentGroup) === String(group.id) ? "active" : ""}" data-view="${group.id}" type="button">
-        <span class="nav-icon">□</span><span class="group-name">${escapeHtml(group.name)}</span><span class="group-count">${group.note_count}</span>
+        <svg class="folder-icon group-folder-icon" viewBox="0 0 20 18" aria-hidden="true"><path d="M2.5 4.5h5l1.7 2h8.3v8.75H2.5zM2.5 4.5V2.75h5.3"></path></svg>
+        <span class="group-name">${escapeHtml(group.name)}</span>
       </button>
-      <span class="group-actions">
-        <button class="group-action" data-group-rename="${group.id}" type="button" title="重命名">✎</button>
-        <button class="group-action" data-group-delete="${group.id}" type="button" title="删除">×</button>
-      </span>
+      <button class="group-more-button" data-group-more="${group.id}" type="button" title="更多操作" aria-label="${escapeHtml(group.name)}的更多操作" aria-haspopup="menu" aria-controls="group-action-menu" aria-expanded="false">
+        <svg viewBox="0 0 18 18" aria-hidden="true"><circle cx="4" cy="9" r="1"></circle><circle cx="9" cy="9" r="1"></circle><circle cx="14" cy="9" r="1"></circle></svg>
+      </button>
     </div>`).join("");
   $$(".nav-item[data-view]").forEach(button => button.classList.toggle("active", String(button.dataset.view) === String(state.currentGroup)));
+}
+
+function closeGroupActionMenu(restoreFocus = false) {
+  if (!els.groupActionMenu) return;
+  els.groupActionMenu.classList.add("hidden");
+  els.groupActionMenu.removeAttribute("style");
+  if (openGroupActionButton) {
+    openGroupActionButton.setAttribute("aria-expanded", "false");
+    openGroupActionButton.closest(".group-row")?.classList.remove("menu-open");
+    if (restoreFocus) openGroupActionButton.focus();
+  }
+  openGroupActionId = null;
+  openGroupActionButton = null;
+}
+
+function toggleGroupActionMenu(groupId, button) {
+  if (openGroupActionId === groupId) { closeGroupActionMenu(); return; }
+  closeGroupActionMenu();
+  openGroupActionId = groupId;
+  openGroupActionButton = button;
+  button.setAttribute("aria-expanded", "true");
+  button.closest(".group-row")?.classList.add("menu-open");
+  els.groupMenuRename.dataset.groupRename = groupId;
+  els.groupMenuDelete.dataset.groupDelete = groupId;
+  els.groupActionMenu.classList.remove("hidden");
+
+  const anchor = button.getBoundingClientRect();
+  const menu = els.groupActionMenu.getBoundingClientRect();
+  const margin = 8;
+  const left = Math.max(margin, Math.min(anchor.right - menu.width, window.innerWidth - menu.width - margin));
+  const below = anchor.bottom + 5;
+  const top = below + menu.height <= window.innerHeight - margin ? below : Math.max(margin, anchor.top - menu.height - 5);
+  els.groupActionMenu.style.left = `${left}px`;
+  els.groupActionMenu.style.top = `${top}px`;
 }
 
 function renderGroupSelect() {
@@ -612,6 +651,29 @@ function bindEvents() {
       trashNote(noteId);
       return;
     }
+    const groupMore = event.target.closest("[data-group-more]");
+    if (groupMore) {
+      event.stopPropagation();
+      toggleGroupActionMenu(Number(groupMore.dataset.groupMore), groupMore);
+      return;
+    }
+    const rename = event.target.closest("[data-group-rename]");
+    if (rename) {
+      event.stopPropagation();
+      const groupId = Number(rename.dataset.groupRename);
+      closeGroupActionMenu();
+      renameGroup(groupId);
+      return;
+    }
+    const remove = event.target.closest("[data-group-delete]");
+    if (remove) {
+      event.stopPropagation();
+      const groupId = Number(remove.dataset.groupDelete);
+      closeGroupActionMenu();
+      deleteGroup(groupId);
+      return;
+    }
+    if (!event.target.closest("#group-action-menu")) closeGroupActionMenu();
     const view = event.target.closest("[data-view]")?.dataset.view;
     if (view !== undefined) selectView(/^\d+$/.test(view) ? Number(view) : view);
     const noteCard = event.target.closest("[data-note-id]");
@@ -621,10 +683,6 @@ function bindEvents() {
       if (openSwipeRow) { closeSwipeRow(); return; }
       if (!row?.classList.contains("swiping")) selectNote(Number(noteCard.dataset.noteId));
     }
-    const rename = event.target.closest("[data-group-rename]");
-    if (rename) { event.stopPropagation(); renameGroup(Number(rename.dataset.groupRename)); }
-    const remove = event.target.closest("[data-group-delete]");
-    if (remove) { event.stopPropagation(); deleteGroup(Number(remove.dataset.groupDelete)); }
   });
   els.noteList.addEventListener("keydown", event => {
     if ((event.key === "Enter" || event.key === " ") && event.target.matches("[data-note-id]")) { event.preventDefault(); selectNote(Number(event.target.dataset.noteId)); }
@@ -781,6 +839,7 @@ function bindEvents() {
   });
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden" && state.saveTimer) saveNow(); });
   document.addEventListener("keydown", event => {
+    if (event.key === "Escape" && openGroupActionId !== null) { closeGroupActionMenu(true); return; }
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") { event.preventDefault(); saveNow(); }
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "n" && state.user) { event.preventDefault(); newNote(); }
   });

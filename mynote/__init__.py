@@ -6,6 +6,7 @@ from datetime import timedelta
 from pathlib import Path
 
 from flask import Flask
+from werkzeug.security import generate_password_hash
 
 from .db import close_db, init_app_database
 from .routes import api, pages
@@ -44,6 +45,10 @@ def create_app(test_config: dict | None = None) -> Flask:
         UPLOAD_FOLDER=str(instance_path / "uploads"),
         MAX_CONTENT_LENGTH=64 * 1024 * 1024,
         MAX_IMAGE_SIZE=10 * 1024 * 1024,
+        DUMMY_PASSWORD_HASH=generate_password_hash(secrets.token_urlsafe(32)),
+        LOGIN_MAX_FAILURES=3,
+        LOGIN_FAILURE_WINDOW_SECONDS=15 * 60,
+        LOGIN_BLOCK_SECONDS=15 * 60,
         PERMANENT_SESSION_LIFETIME=timedelta(days=30),
         SESSION_REFRESH_EACH_REQUEST=True,
         SESSION_COOKIE_HTTPONLY=True,

@@ -72,11 +72,27 @@
           </button>
         </nav>
 
-        <div class="section-heading">
-          <span>分组</span>
-          <button id="new-group-button" class="tiny-button" type="button" title="新建分组">＋</button>
+        <div class="section-heading group-section-heading">
+          <span class="group-heading-label">
+            <svg class="folder-icon" viewBox="0 0 20 18" aria-hidden="true"><path d="M2.5 4.5h5l1.7 2h8.3v8.75H2.5zM2.5 4.5V2.75h5.3"></path></svg>
+            <span>分组</span>
+            <span class="group-heading-caret" aria-hidden="true"></span>
+          </span>
+          <button id="new-group-button" class="tiny-button group-add-button" type="button" title="新建分组" aria-label="新建分组">
+            <svg class="group-add-icon" viewBox="0 0 18 18" aria-hidden="true"><path d="M4.5 9h9M9 4.5v9"></path></svg>
+          </button>
         </div>
         <div id="group-list" class="group-list" aria-label="便签分组"></div>
+        <div id="group-action-menu" class="group-action-menu hidden" role="menu" aria-label="分组操作">
+          <button class="group-menu-item" id="group-menu-rename" type="button" role="menuitem">
+            <svg viewBox="0 0 18 18" aria-hidden="true"><path d="m3 12.5-.5 3 3-.5 8.2-8.2-2.5-2.5zM10.5 5l2.5 2.5"></path></svg>
+            <span>重命名</span>
+          </button>
+          <button class="group-menu-item danger" id="group-menu-delete" type="button" role="menuitem">
+            <svg viewBox="0 0 18 18" aria-hidden="true"><path d="M3.5 5h11M7 2.75h4M5 5l.6 10h6.8L13 5M7.5 7.5v5M10.5 7.5v5"></path></svg>
+            <span>删除</span>
+          </button>
+        </div>
 
         <div class="sidebar-spacer"></div>
         <button class="nav-item trash-nav" data-view="trash" type="button">
