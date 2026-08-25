@@ -161,7 +161,8 @@ def test_cross_platform_icons_and_manifest(client):
     assert manifest_response.status_code == 200
     manifest = json.loads(manifest_response.data)
     assert manifest["name"] == "MyNote 私有便签"
-    assert manifest["theme_color"] == "#f2c500"
+    assert manifest["theme_color"] == "#ffffff"
+    assert manifest["background_color"] == "#ffffff"
     assert {icon["sizes"] for icon in manifest["icons"]} >= {"192x192", "512x512"}
     assert any("maskable" in icon.get("purpose", "") for icon in manifest["icons"])
 

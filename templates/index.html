@@ -3,34 +3,34 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#f2c500">
+  <meta name="theme-color" content="#ffffff">
   <meta name="application-name" content="MyNote">
   <meta name="apple-mobile-web-app-title" content="MyNote">
-  <meta name="msapplication-TileColor" content="#f2c500">
-  <meta name="msapplication-config" content="{{ url_for('static', filename='browserconfig.xml') }}">
+  <meta name="msapplication-TileColor" content="#ffffff">
+  <meta name="msapplication-config" content="{{ url_for('static', filename='browserconfig.xml', v='2') }}">
   <meta name="csrf-token" content="{{ csrf_token }}">
   <title>MyNote · 私有便签</title>
-  <link rel="manifest" href="{{ url_for('static', filename='site.webmanifest') }}">
-  <link rel="icon" href="{{ url_for('static', filename='icons/favicon.ico') }}" sizes="any">
-  <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='icons/favicon-32x32.png') }}">
-  <link rel="icon" type="image/png" sizes="16x16" href="{{ url_for('static', filename='icons/favicon-16x16.png') }}">
-  <link rel="apple-touch-icon" sizes="180x180" href="{{ url_for('static', filename='icons/apple-touch-icon.png') }}">
-  <link rel="apple-touch-icon" sizes="167x167" href="{{ url_for('static', filename='icons/apple-touch-icon-167x167.png') }}">
-  <link rel="apple-touch-icon" sizes="152x152" href="{{ url_for('static', filename='icons/apple-touch-icon-152x152.png') }}">
+  <link rel="manifest" href="{{ url_for('static', filename='site.webmanifest', v='2') }}">
+  <link rel="icon" href="{{ url_for('static', filename='icons/favicon.ico', v='2') }}" sizes="any">
+  <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='icons/favicon-32x32.png', v='2') }}">
+  <link rel="icon" type="image/png" sizes="16x16" href="{{ url_for('static', filename='icons/favicon-16x16.png', v='2') }}">
+  <link rel="apple-touch-icon" sizes="180x180" href="{{ url_for('static', filename='icons/apple-touch-icon.png', v='2') }}">
+  <link rel="apple-touch-icon" sizes="167x167" href="{{ url_for('static', filename='icons/apple-touch-icon-167x167.png', v='2') }}">
+  <link rel="apple-touch-icon" sizes="152x152" href="{{ url_for('static', filename='icons/apple-touch-icon-152x152.png', v='2') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='styles.css', v=asset_version('styles.css')) }}">
 </head>
 <body>
   <noscript><div class="noscript">此应用需要启用 JavaScript。</div></noscript>
 
   <section id="boot-screen" class="boot-screen" aria-label="正在打开便签">
-    <div class="boot-mark"><img src="{{ url_for('static', filename='icons/icon-192x192.png') }}" alt=""></div>
+    <div class="boot-mark"><img src="{{ url_for('static', filename='icons/icon-192x192.png', v='2') }}" alt=""></div>
     <p>正在打开 MyNote…</p>
   </section>
 
   <section id="auth-screen" class="auth-screen hidden" aria-label="账号登录">
     <div class="auth-card">
       <div class="auth-brand">
-        <div class="brand-mark" aria-hidden="true"><img src="{{ url_for('static', filename='icons/icon-192x192.png') }}" alt=""></div>
+        <div class="brand-mark" aria-hidden="true"><img src="{{ url_for('static', filename='icons/icon-192x192.png', v='2') }}" alt=""></div>
         <div>
           <h1>MyNote</h1>
           <p>属于你和家人的私有便签</p>
@@ -61,7 +61,7 @@
     <div id="workspace" class="workspace" data-mobile-view="list">
       <aside class="sidebar pane" aria-label="便签导航">
         <div class="sidebar-brand">
-          <span class="mini-mark"><img src="{{ url_for('static', filename='icons/icon-192x192.png') }}" alt=""></span>
+          <span class="mini-mark"><img src="{{ url_for('static', filename='icons/icon-192x192.png', v='2') }}" alt=""></span>
           <span>MyNote</span>
           <button class="icon-button mobile-only" id="sidebar-close" title="关闭导航">×</button>
         </div>

@@ -110,11 +110,12 @@ Windows 原生方式需要先安装 [uv](https://docs.astral.sh/uv/)。安装后
 
 ## 图标和主屏幕快捷方式
 
-- 电脑浏览器会显示 favicon，也可以将网页创建为桌面快捷方式。
+- Windows Edge：打开网站，选择“设置及其他 → 应用 → 将此站点安装为应用”，即可获得独立窗口、桌面和开始菜单入口。
+- 电脑浏览器会显示透明背景的 favicon 和应用图标。
 - Android：使用 Chrome 打开网站，选择“添加到主屏幕”。
 - iPhone、iPad：使用 Safari 打开网站，点击“分享 → 添加到主屏幕”。
 
-项目包含浏览器 favicon、Web App Manifest、Apple Touch Icon 和 Windows 磁贴图标。更新后仍显示旧图标时，请关闭旧标签页，或删除原有主屏幕快捷方式后重新添加。
+项目包含浏览器 favicon、Web App Manifest、Apple Touch Icon 和 Windows 磁贴图标。桌面图标使用透明背景；Android maskable 图标和 Apple Touch Icon 使用白色底板。更新后仍显示旧图标时，请关闭旧标签页并清除该站点的缓存；已经安装的应用或主屏幕快捷方式需要删除后重新添加。
 
 MyNote 提供主屏幕图标和响应式网页，但当前不提供断网编辑、后台同步或完整 PWA 离线能力。
 
