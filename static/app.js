@@ -85,11 +85,28 @@ function escapeHtml(value = "") {
 }
 
 function toast(message, kind = "normal") {
+  // Modal dialogs render above the document, regardless of the page's z-index.
+  // Keep their feedback inside the dialog so it remains visible and accessible.
+  const dialog = document.activeElement?.closest("dialog[open]") || document.querySelector("dialog[open]");
+  let region = els.toast;
+  if (dialog) {
+    region = dialog.querySelector(".dialog-toast-region");
+    if (!region) {
+      region = document.createElement("div");
+      region.className = "dialog-toast-region";
+      region.setAttribute("aria-live", "polite");
+      region.setAttribute("aria-atomic", "true");
+      dialog.append(region);
+    }
+  }
   const node = document.createElement("div");
   node.className = `toast ${kind === "error" ? "error" : ""}`;
   node.textContent = message;
-  els.toast.append(node);
-  setTimeout(() => node.remove(), 3400);
+  region.append(node);
+  setTimeout(() => {
+    node.remove();
+    if (region !== els.toast && !region.childElementCount) region.remove();
+  }, 3400);
 }
 
 function formatTime(value, includeTime = false) {

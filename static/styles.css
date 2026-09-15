@@ -209,6 +209,8 @@ input:focus, select:focus { border-color: var(--accent-deep) !important; box-sha
 .logout-section { text-align: right; }
 
 .toast-region { position: fixed; z-index: 100; right: 18px; bottom: 18px; display: grid; gap: 8px; pointer-events: none; }
+.dialog-toast-region { flex: none; display: grid; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--line); background: #fff; }
+.dialog-toast-region .toast { min-width: 0; max-width: none; }
 .toast { min-width: 210px; max-width: 360px; padding: 11px 14px; border-radius: 8px; background: #2f3034; color: white; box-shadow: 0 8px 24px rgba(0,0,0,.18); font-size: 12px; animation: toast-in .2s ease-out; }
 .toast.error { background: #b94040; }
 @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } }
