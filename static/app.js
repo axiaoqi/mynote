@@ -66,8 +66,13 @@ async function api(url, options = {}) {
   }
   const type = response.headers.get("content-type") || "";
   const data = type.includes("application/json") ? await response.json() : null;
+  if (data?.csrf_token) state.csrf = data.csrf_token;
   if (!response.ok) {
-    if (response.status === 401 && url !== "/api/login") showAuth();
+    if (response.status === 401 && url !== "/api/login") {
+      // Revoked/expired cookies need a fresh CSRF token before the next login.
+      try { await api("/api/session"); } catch (_) {}
+      showAuth();
+    }
     throw new ApiError(data?.error || `请求失败（${response.status}）`, response.status, data);
   }
   return data;
@@ -101,6 +106,8 @@ function isMobile() { return window.matchMedia("(max-width: 760px)").matches; }
 function mobileView(view) { if (isMobile()) els.workspace.dataset.mobileView = view; }
 
 function switchAuth(tab) {
+  $(".auth-tabs").classList.remove("hidden");
+  $("#mfa-login-form").classList.add("hidden");
   const registering = tab === "register";
   els.loginTab.classList.toggle("active", !registering);
   els.registerTab.classList.toggle("active", registering);
@@ -110,6 +117,7 @@ function switchAuth(tab) {
 }
 
 function showAuth() {
+  if (els.settings.open) els.settings.close();
   clearTimeout(state.saveTimer);
   state.user = null;
   els.boot.classList.add("hidden");
@@ -176,7 +184,10 @@ async function bootstrap() {
     state.csrf = data.csrf_token;
     state.registrationOpen = data.registration_open;
     if (data.authenticated) await enterApp(data.user);
-    else showAuth();
+    else {
+      showAuth();
+      if (data.mfa_required) showMfaLogin();
+    }
   } catch (error) {
     showAuth();
     toast(error.message, "error");
@@ -193,6 +204,7 @@ async function authSubmit(form, endpoint) {
     const data = await api(endpoint, { method: "POST", body });
     state.csrf = data.csrf_token;
     form.reset();
+    if (data.mfa_required) { showMfaLogin(); return; }
     await enterApp(data.user);
   } catch (error) {
     errorNode.textContent = error.message;
@@ -593,6 +605,7 @@ async function uploadImage(file) {
 async function openSettings() {
   $("#profile-form input[name='display_name']").value = state.user.display_name;
   els.settings.showModal();
+  await refreshMfa();
   els.adminSection.classList.toggle("hidden", !state.user.is_admin);
   if (state.user.is_admin) {
     try {
@@ -788,7 +801,9 @@ function bindEvents() {
     mobileView("list");
   });
   $("#user-menu-button").addEventListener("click", openSettings);
-  $("#settings-close").addEventListener("click", () => els.settings.close());
+  $("#settings-close").addEventListener("click", () => {
+    if (canCloseSecurity()) els.settings.close();
+  });
   $("#import-button").addEventListener("click", () => els.importInput.click());
   els.importInput.addEventListener("change", () => importFile(els.importInput.files[0]));
 
@@ -803,13 +818,19 @@ function bindEvents() {
   $("#password-form").addEventListener("submit", async event => {
     event.preventDefault();
     try {
+      await flushSave();
       const body = Object.fromEntries(new FormData(event.target));
+      Object.assign(body, factorBody(body.factor));
       await api("/api/account", { method: "PATCH", body }); event.target.reset(); toast("密码已更新");
     } catch (error) { toast(error.message, "error"); }
   });
   $("#logout-button").addEventListener("click", async () => {
+    if (!canCloseSecurity()) return;
     await flushSave();
-    try { await api("/api/logout", { method: "POST" }); } catch (_) {}
+    try {
+      await api("/api/logout", { method: "POST" });
+      await api("/api/session");
+    } catch (_) {}
     els.settings.close(); showAuth();
   });
   els.registrationToggle.addEventListener("change", async () => {
@@ -845,5 +866,172 @@ function bindEvents() {
   });
 }
 
+const securityUi = { busy: false, codesPending: false };
+
+function factorBody(value = "") {
+  const factor = String(value).trim();
+  return /^[0-9]{6}$/.test(factor) ? { code: factor } : { recovery_code: factor };
+}
+
+function showMfaLogin() {
+  els.loginForm.classList.add("hidden");
+  els.registerForm.classList.add("hidden");
+  $(".auth-tabs").classList.add("hidden");
+  els.firstUserTip.classList.add("hidden");
+  const form = $("#mfa-login-form");
+  form.reset();
+  $(".form-error", form).textContent = "";
+  $("input[name='code']", form).inputMode = "numeric";
+  form.classList.remove("hidden");
+  $("input[name='code']", form).focus();
+}
+
+async function refreshMfa() {
+  const buttons = ["#mfa-setup-button", "#mfa-codes-button", "#mfa-disable-button"];
+  buttons.forEach(id => $(id).disabled = true);
+  try {
+    const data = await api("/api/mfa");
+    $("#mfa-status").textContent = data.enabled
+      ? `已开启 · 剩余 ${data.recovery_codes_remaining} 个恢复码。更换验证器请先关闭，再重新绑定。`
+      : "尚未开启";
+    $("#mfa-setup-button").classList.toggle("hidden", data.enabled);
+    ["#mfa-codes-button", "#mfa-disable-button", "#mfa-proof-label", "#password-factor-label"].forEach(id => $(id).classList.toggle("hidden", !data.enabled));
+    $("#mfa-proof-label input").required = data.enabled;
+    $("#password-factor-label input").required = data.enabled;
+    buttons.forEach(id => $(id).disabled = false);
+  } catch (error) {
+    $("#mfa-status").textContent = "读取二次验证状态失败，请关闭设置后重试";
+    toast(error.message, "error");
+  }
+}
+
+function clearBinding() {
+  $("#mfa-binding-form").reset();
+  $("#mfa-binding-form").classList.add("hidden");
+  $("#mfa-qr").removeAttribute("src");
+  $("#mfa-secret").value = "";
+}
+
+function displayRecoveryCodes(codes) {
+  securityUi.codesPending = true;
+  $("#mfa-recovery-codes").value = codes.join("\n");
+  $("#mfa-recovery-panel").classList.remove("hidden");
+  $("#mfa-recovery-panel").scrollIntoView({ block: "nearest" });
+}
+
+function canCloseSecurity() {
+  if (securityUi.busy) { toast("正在处理安全设置，请稍候"); return false; }
+  if (securityUi.codesPending) { toast("请先保存恢复码，并点击“我已安全保存”"); return false; }
+  return true;
+}
+
+async function securitySubmit(form, action) {
+  if (securityUi.busy) return;
+  securityUi.busy = true;
+  const buttons = [...form.querySelectorAll("button")];
+  buttons.forEach(button => button.disabled = true);
+  $(".form-error", form).textContent = "";
+  try {
+    await action();
+  } catch (error) {
+    $(".form-error", form).textContent = error.message;
+  } finally {
+    securityUi.busy = false;
+    buttons.forEach(button => button.disabled = false);
+  }
+}
+
+function bindSecurityEvents() {
+  const loginForm = $("#mfa-login-form");
+  $("#mfa-use-recovery").addEventListener("change", event => {
+    const field = $("input[name='code']", loginForm);
+    field.value = "";
+    field.inputMode = event.target.checked ? "text" : "numeric";
+    field.placeholder = event.target.checked ? "输入一个未使用的恢复码" : "6 位动态验证码";
+    field.focus();
+  });
+  loginForm.addEventListener("submit", event => {
+    event.preventDefault();
+    securitySubmit(loginForm, async () => {
+      const value = $("input[name='code']", loginForm).value.trim();
+      const body = $("#mfa-use-recovery").checked ? { recovery_code: value } : { code: value };
+      const data = await api("/api/mfa/login", { method: "POST", body });
+      loginForm.reset();
+      await enterApp(data.user);
+    });
+  });
+  $("#mfa-login-back").addEventListener("click", async () => {
+    if (securityUi.busy) return;
+    try { await api("/api/mfa/cancel", { method: "POST" }); showAuth(); }
+    catch (error) { toast(error.message, "error"); }
+  });
+  $("#mfa-settings-form").addEventListener("submit", event => {
+    event.preventDefault();
+    if (securityUi.codesPending) { toast("请先保存当前恢复码"); return; }
+    const action = event.submitter?.value;
+    if (!["setup", "disable", "recovery-codes"].includes(action)) return;
+    if (action === "disable" && !window.confirm("关闭后，登录将只需密码。确定关闭二次验证？")) return;
+    if (action === "recovery-codes" && !window.confirm("重新生成后，所有旧恢复码立即失效。继续？")) return;
+    const form = event.target;
+    securitySubmit(form, async () => {
+      await flushSave();
+      const body = Object.fromEntries(new FormData(form));
+      Object.assign(body, factorBody(body.factor));
+      const data = await api(`/api/mfa/${action}`, { method: "POST", body });
+      form.reset();
+      clearBinding();
+      if (action === "setup") {
+        $("#mfa-secret").value = data.secret;
+        $("#mfa-qr").src = data.qr_code;
+        $("#mfa-binding-form .form-error").textContent = "";
+        $("#mfa-binding-form").classList.remove("hidden");
+        $("#mfa-binding-form input[name='code']").focus();
+      } else {
+        await refreshMfa();
+        if (data.recovery_codes) displayRecoveryCodes(data.recovery_codes);
+        toast(action === "disable" ? "二次验证已关闭，其他设备已退出" : "恢复码已更新，其他设备已退出");
+      }
+    });
+  });
+  $("#mfa-binding-form").addEventListener("submit", event => {
+    event.preventDefault();
+    const form = event.target;
+    securitySubmit(form, async () => {
+      await flushSave();
+      const data = await api("/api/mfa/enable", { method: "POST", body: Object.fromEntries(new FormData(form)) });
+      clearBinding();
+      await refreshMfa();
+      displayRecoveryCodes(data.recovery_codes);
+      toast("二次验证已开启，其他设备已退出");
+    });
+  });
+  $("#mfa-download-codes").addEventListener("click", () => {
+    const content = `MyNote 恢复码 · ${state.user.username}\n每个只能使用一次，请单独安全保存。\n\n${$("#mfa-recovery-codes").value}\n`;
+    const url = URL.createObjectURL(new Blob([content], { type: "text/plain;charset=utf-8" }));
+    const link = document.createElement("a");
+    link.href = url; link.download = "mynote-recovery-codes.txt";
+    document.body.append(link); link.click(); link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  });
+  $("#mfa-ack-codes").addEventListener("click", () => {
+    securityUi.codesPending = false;
+    $("#mfa-recovery-codes").value = "";
+    $("#mfa-recovery-panel").classList.add("hidden");
+  });
+  els.settings.addEventListener("cancel", event => { if (!canCloseSecurity()) event.preventDefault(); });
+  els.settings.addEventListener("close", () => {
+    clearBinding();
+    $("#mfa-settings-form").reset();
+    $("#password-form").reset();
+    $("#mfa-recovery-codes").value = "";
+    $("#mfa-recovery-panel").classList.add("hidden");
+    securityUi.codesPending = false;
+  });
+  window.addEventListener("beforeunload", event => {
+    if (securityUi.codesPending || securityUi.busy) { event.preventDefault(); event.returnValue = ""; }
+  });
+}
+
 bindEvents();
+bindSecurityEvents();
 bootstrap();

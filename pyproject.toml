@@ -9,6 +9,9 @@ dependencies = [
     "flask>=3.1.0",
     "markdown>=3.7",
     "waitress>=3.0.2",
+    "pyotp==2.9.0",
+    "cryptography>=46,<50",
+    "qrcode>=8.2,<9",
 ]
 
 [dependency-groups]

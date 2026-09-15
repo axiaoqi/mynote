@@ -31,6 +31,7 @@ from werkzeug.utils import secure_filename
 
 from .content import html_to_text, plain_to_html, safe_filename_part, sanitize_html
 from .db import get_db, set_setting, setting
+from .security import atomic, current_user_locked, require_password, revoke_sessions, session_matches, verify_factor
 
 
 pages = Blueprint("pages", __name__)
@@ -154,10 +155,13 @@ def _csrf_token() -> str:
     return session["csrf_token"]
 
 
-def _start_authenticated_session(user_id: int) -> None:
+def _start_authenticated_session(user_id: int, auth_version: int | None = None) -> None:
     session.clear()
     session.permanent = True
     session["user_id"] = user_id
+    if auth_version is None:
+        auth_version = get_db().execute("SELECT auth_version FROM users WHERE id = ?", (user_id,)).fetchone()[0]
+    session["auth_version"] = auth_version
     session["csrf_token"] = secrets.token_urlsafe(32)
 
 
@@ -182,10 +186,10 @@ def login_required(view):
         if not user_id:
             return jsonify(error="请先登录", code="login_required"), 401
         user = get_db().execute(
-            "SELECT id, username, display_name, is_admin, is_active, created_at FROM users WHERE id = ?",
+            "SELECT id, username, display_name, is_admin, is_active, created_at, auth_version FROM users WHERE id = ?",
             (user_id,),
         ).fetchone()
-        if not user or not user["is_active"]:
+        if not session_matches(user):
             session.clear()
             return jsonify(error="账号不可用，请重新登录", code="account_inactive"), 401
         request.current_user = user
@@ -250,10 +254,10 @@ def session_status():
     user_id = session.get("user_id")
     if user_id:
         user = get_db().execute(
-            "SELECT id, username, display_name, is_admin, is_active, created_at FROM users WHERE id = ?",
+            "SELECT id, username, display_name, is_admin, is_active, created_at, auth_version FROM users WHERE id = ?",
             (user_id,),
         ).fetchone()
-        if user and user["is_active"]:
+        if session_matches(user):
             # Upgrade cookies created by versions that used browser-session
             # cookies. Marking the session permanent causes Flask to resend it
             # with the configured expiry date.
@@ -263,6 +267,17 @@ def session_status():
         else:
             session.clear()
     response["csrf_token"] = _csrf_token()
+    if session.get("mfa_challenge"):
+        from .security import digest, now
+        challenge = get_db().execute(
+            "SELECT 1 FROM mfa_challenges c JOIN users u ON u.id = c.user_id "
+            "WHERE c.token_hash = ? AND c.expires_at > ? AND c.auth_version = u.auth_version "
+            "AND u.is_active = 1 AND u.totp_secret IS NOT NULL",
+            (digest(session["mfa_challenge"]), now()),
+        ).fetchone()
+        response["mfa_required"] = bool(challenge)
+        if not challenge:
+            session.pop("mfa_challenge", None)
     return jsonify(response)
 
 
@@ -292,7 +307,7 @@ def register():
         return jsonify(error="该用户名已被使用", code="username_taken"), 409
     _start_authenticated_session(cursor.lastrowid)
     user = db.execute(
-        "SELECT id, username, display_name, is_admin, is_active, created_at FROM users WHERE id = ?",
+        "SELECT id, username, display_name, is_admin, is_active, created_at, auth_version FROM users WHERE id = ?",
         (cursor.lastrowid,),
     ).fetchone()
     return jsonify(user=_user_json(user), csrf_token=session["csrf_token"]), 201
@@ -317,8 +332,11 @@ def login():
         return jsonify(error="用户名或密码错误", code="invalid_credentials"), 401
     if not user["is_active"]:
         return jsonify(error="账号已被停用，请联系管理员", code="account_inactive"), 403
+    if user["totp_secret"]:
+        from .mfa import start_challenge
+        return start_challenge(user)
     _clear_login_failures(ip_address)
-    _start_authenticated_session(user["id"])
+    _start_authenticated_session(user["id"], user["auth_version"])
     return jsonify(user=_user_json(user), csrf_token=session["csrf_token"])
 
 
@@ -333,34 +351,38 @@ def logout():
 @login_required
 def update_account():
     data = request.get_json(silent=True) or {}
-    db = get_db()
     user_id = request.current_user["id"]
+    display_name = None
     if "display_name" in data:
         display_name = str(data["display_name"]).strip()
         if not display_name or len(display_name) > 40:
             return jsonify(error="昵称需为 1–40 个字符", code="invalid_display_name"), 400
-        db.execute("UPDATE users SET display_name = ? WHERE id = ?", (display_name, user_id))
+    new_password = None
     if data.get("new_password"):
-        row = db.execute("SELECT password_hash FROM users WHERE id = ?", (user_id,)).fetchone()
-        if not check_password_hash(row["password_hash"], str(data.get("current_password", ""))):
-            return jsonify(error="当前密码不正确", code="invalid_current_password"), 400
         new_password = str(data["new_password"])
         if len(new_password) < 8 or len(new_password) > 128:
             return jsonify(error="新密码长度需为 8–128 位", code="invalid_password"), 400
-        db.execute("UPDATE users SET password_hash = ? WHERE id = ?", (generate_password_hash(new_password), user_id))
-    db.commit()
-    user = db.execute(
-        "SELECT id, username, display_name, is_admin, is_active, created_at FROM users WHERE id = ?",
-        (user_id,),
-    ).fetchone()
-    return jsonify(user=_user_json(user))
+    with atomic() as db:
+        original = current_user_locked()
+        if new_password:
+            require_password(original, data)
+            if original["totp_secret"]:
+                verify_factor(original, data)
+            db.execute("UPDATE users SET password_hash = ? WHERE id = ?", (generate_password_hash(new_password), user_id))
+            revoke_sessions(user_id)
+        if display_name is not None:
+            db.execute("UPDATE users SET display_name = ? WHERE id = ?", (display_name, user_id))
+        user = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    if new_password:
+        _start_authenticated_session(user_id, user["auth_version"])
+    return jsonify(user=_user_json(user), csrf_token=_csrf_token())
 
 
 @api.get("/admin/users")
 @admin_required
 def admin_users():
     rows = get_db().execute(
-        "SELECT id, username, display_name, is_admin, is_active, created_at FROM users ORDER BY id"
+        "SELECT id, username, display_name, is_admin, is_active, created_at, auth_version FROM users ORDER BY id"
     ).fetchall()
     return jsonify(
         users=[_user_json(row) for row in rows],
@@ -385,11 +407,14 @@ def admin_update_user(user_id: int):
     data = request.get_json(silent=True) or {}
     if "is_active" not in data:
         return jsonify(error="缺少 is_active", code="invalid_request"), 400
-    db = get_db()
-    cursor = db.execute("UPDATE users SET is_active = ? WHERE id = ?", (1 if data["is_active"] else 0, user_id))
-    db.commit()
-    if not cursor.rowcount:
-        return jsonify(error="用户不存在", code="not_found"), 404
+    with atomic() as db:
+        current = current_user_locked()
+        if not current["is_admin"]:
+            return jsonify(error="需要管理员权限", code="admin_required"), 403
+        cursor = db.execute("UPDATE users SET is_active = ? WHERE id = ?", (1 if data["is_active"] else 0, user_id))
+        if not cursor.rowcount:
+            return jsonify(error="用户不存在", code="not_found"), 404
+        revoke_sessions(user_id)
     return jsonify(ok=True)
 
 

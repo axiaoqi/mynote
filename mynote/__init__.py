@@ -10,6 +10,7 @@ from werkzeug.security import generate_password_hash
 
 from .db import close_db, init_app_database
 from .routes import api, pages
+from .mfa import init_security
 
 
 def _persistent_secret(instance_path: Path) -> str:
@@ -53,6 +54,9 @@ def create_app(test_config: dict | None = None) -> Flask:
         SESSION_REFRESH_EACH_REQUEST=True,
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE="Lax",
+        SESSION_COOKIE_SECURE=os.environ.get("MYNOTE_HTTPS_ONLY", "0") == "1",
+        MFA_ENCRYPTION_KEY=os.environ.get("MYNOTE_MFA_ENCRYPTION_KEY"),
+        MFA_MAX_FAILURES=5,
         JSON_AS_ASCII=False,
     )
     if test_config:
@@ -70,6 +74,7 @@ def create_app(test_config: dict | None = None) -> Flask:
     app.teardown_appcontext(close_db)
     app.register_blueprint(pages)
     app.register_blueprint(api)
+    init_security(app)
 
     with app.app_context():
         init_app_database()

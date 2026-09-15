@@ -11,6 +11,7 @@ services:
     environment:
       TZ: Asia/Shanghai
       MYNOTE_INSTANCE_PATH: /app/instance
+      MYNOTE_HTTPS_ONLY: ${MYNOTE_HTTPS_ONLY:-0}
     volumes:
       - ./instance:/app/instance
     security_opt:

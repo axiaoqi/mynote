@@ -99,6 +99,35 @@ def init_app_database() -> None:
     db = get_db()
     db.execute("PRAGMA journal_mode = WAL")
     db.executescript(SCHEMA)
+    columns = {row["name"] for row in db.execute("PRAGMA table_info(users)")}
+    for name, definition in {
+        "auth_version": "INTEGER NOT NULL DEFAULT 0",
+        "totp_secret": "TEXT",
+        "totp_pending_secret": "TEXT",
+        "totp_pending_until": "INTEGER",
+        "totp_last_step": "INTEGER NOT NULL DEFAULT -1",
+    }.items():
+        if name not in columns:
+            db.execute(f"ALTER TABLE users ADD COLUMN {name} {definition}")
+    db.executescript("""
+        CREATE TABLE IF NOT EXISTS recovery_codes (
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            code_hash TEXT NOT NULL,
+            PRIMARY KEY (user_id, code_hash)
+        );
+        CREATE TABLE IF NOT EXISTS mfa_challenges (
+            token_hash TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            auth_version INTEGER NOT NULL,
+            expires_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_mfa_challenges_user ON mfa_challenges(user_id);
+        CREATE TABLE IF NOT EXISTS security_attempts (
+            bucket TEXT PRIMARY KEY,
+            failures INTEGER NOT NULL,
+            reset_at INTEGER NOT NULL
+        );
+    """)
     db.execute(
         "INSERT OR IGNORE INTO app_settings(key, value) VALUES ('registration_open', '1')"
     )
