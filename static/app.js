@@ -122,7 +122,15 @@ function formatTime(value, includeTime = false) {
 function isMobile() { return window.matchMedia("(max-width: 760px)").matches; }
 function mobileView(view) { if (isMobile()) els.workspace.dataset.mobileView = view; }
 
+function setLoginPasswordVisible(visible) {
+  $("#login-password").type = visible ? "text" : "password";
+  const button = $("#login-password-toggle");
+  button.textContent = visible ? "隐藏" : "显示";
+  button.setAttribute("aria-label", visible ? "隐藏密码" : "显示密码");
+}
+
 function switchAuth(tab) {
+  setLoginPasswordVisible(false);
   $(".auth-tabs").classList.remove("hidden");
   $("#mfa-login-form").classList.add("hidden");
   const registering = tab === "register";
@@ -669,7 +677,15 @@ function bindEvents() {
 
   els.loginTab.addEventListener("click", () => switchAuth("login"));
   els.registerTab.addEventListener("click", () => switchAuth("register"));
-  els.loginForm.addEventListener("submit", event => { event.preventDefault(); authSubmit(els.loginForm, "/api/login"); });
+  $("#login-password-toggle").addEventListener("click", () => {
+    setLoginPasswordVisible($("#login-password").type === "password");
+  });
+  els.loginForm.addEventListener("reset", () => setLoginPasswordVisible(false));
+  els.loginForm.addEventListener("submit", event => {
+    event.preventDefault();
+    setLoginPasswordVisible(false);
+    authSubmit(els.loginForm, "/api/login");
+  });
   els.registerForm.addEventListener("submit", event => { event.preventDefault(); authSubmit(els.registerForm, "/api/register"); });
 
   document.addEventListener("click", event => {

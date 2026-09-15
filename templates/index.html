@@ -42,7 +42,13 @@
       </div>
       <form id="login-form" class="auth-form">
         <label>用户名<input name="username" autocomplete="username" minlength="3" maxlength="32" required></label>
-        <label>密码<input name="password" type="password" autocomplete="current-password" minlength="8" maxlength="128" required></label>
+        <div>
+          <label for="login-password">密码</label>
+          <div class="password-field">
+            <input id="login-password" name="password" type="password" autocomplete="current-password" minlength="8" maxlength="128" required>
+            <button id="login-password-toggle" class="password-toggle" type="button" aria-controls="login-password" aria-label="显示密码">显示</button>
+          </div>
+        </div>
         <p class="form-error" aria-live="polite"></p>
         <button class="primary-button wide" type="submit">登录</button>
       </form>
