@@ -16,7 +16,14 @@ const state = {
   conflictServer: null,
   localConflictDraft: null,
   registrationOpen: true,
+  dirty: false,
+  editRevision: 0,
+  composing: false,
+  pendingConflict: null,
+  sessionEpoch: 0,
 };
+
+const syncState = { revision: null, busy: false, writes: 0, mutation: 0, timer: null, channel: null };
 
 let openGroupActionId = null;
 let openGroupActionButton = null;
@@ -51,31 +58,40 @@ class ApiError extends Error {
 
 async function api(url, options = {}) {
   const method = options.method || "GET";
-  const headers = { Accept: "application/json", ...(options.headers || {}) };
-  let body = options.body;
-  if (method !== "GET" && method !== "HEAD") headers["X-CSRF-Token"] = state.csrf;
-  if (body && !(body instanceof FormData) && typeof body !== "string") {
-    headers["Content-Type"] = "application/json";
-    body = JSON.stringify(body);
-  }
-  let response;
+  const writing = method !== "GET" && method !== "HEAD";
+  if (writing) { syncState.writes++; syncState.mutation++; }
   try {
-    response = await fetch(url, { method, headers, body, credentials: "same-origin" });
-  } catch (error) {
-    throw new ApiError("无法连接到便签服务，请检查电脑是否仍在运行", 0, {});
-  }
-  const type = response.headers.get("content-type") || "";
-  const data = type.includes("application/json") ? await response.json() : null;
-  if (data?.csrf_token) state.csrf = data.csrf_token;
-  if (!response.ok) {
-    if (response.status === 401 && url !== "/api/login") {
-      // Revoked/expired cookies need a fresh CSRF token before the next login.
-      try { await api("/api/session"); } catch (_) {}
-      showAuth();
+    const headers = { Accept: "application/json", ...(options.headers || {}) };
+    let body = options.body;
+    if (method !== "GET" && method !== "HEAD") headers["X-CSRF-Token"] = state.csrf;
+    if (body && !(body instanceof FormData) && typeof body !== "string") {
+      headers["Content-Type"] = "application/json";
+      body = JSON.stringify(body);
     }
-    throw new ApiError(data?.error || `请求失败（${response.status}）`, response.status, data);
+    let response;
+    try {
+      response = await fetch(url, { method, headers, body, credentials: "same-origin", cache: "no-store", signal: options.signal });
+    } catch (error) {
+      throw new ApiError("无法连接到便签服务，请检查电脑是否仍在运行", 0, {});
+    }
+    const type = response.headers.get("content-type") || "";
+    const data = type.includes("application/json") ? await response.json() : null;
+    if (data?.csrf_token) state.csrf = data.csrf_token;
+    if (!response.ok) {
+      if (response.status === 401 && url !== "/api/login") {
+        // Revoked/expired cookies need a fresh CSRF token before the next login.
+        try { await api("/api/session"); } catch (_) {}
+        showAuth();
+      }
+      throw new ApiError(data?.error || `请求失败（${response.status}）`, response.status, data);
+    }
+    if (writing && /^\/api\/(notes|groups|import)(?:[/?]|$)/.test(url)) {
+      try { syncState.channel?.postMessage({ userId: state.user?.id }); } catch (_) {}
+    }
+    return data;
+  } finally {
+    if (writing) { syncState.writes--; syncState.mutation++; }
   }
-  return data;
 }
 
 function escapeHtml(value = "") {
@@ -142,6 +158,9 @@ function switchAuth(tab) {
 }
 
 function showAuth() {
+  state.sessionEpoch++;
+  clearTimeout(syncState.timer);
+  syncState.revision = null;
   if (els.settings.open) els.settings.close();
   clearTimeout(state.saveTimer);
   state.user = null;
@@ -154,6 +173,15 @@ function showAuth() {
 }
 
 async function enterApp(user) {
+  state.sessionEpoch++;
+  syncState.revision = null;
+  state.currentNote = null;
+  state.localConflictDraft = null;
+  state.conflictServer = null;
+  state.composing = false;
+  state.pendingConflict = null;
+  if (els.conflict.open) els.conflict.close();
+  clearEditor();
   state.user = user;
   els.auth.classList.add("hidden");
   els.app.classList.add("hidden");
@@ -166,6 +194,98 @@ async function enterApp(user) {
   await restoreLocation();
   els.boot.classList.add("hidden");
   els.app.classList.remove("hidden");
+  scheduleSync(0);
+}
+
+function scheduleSync(delay = 4000) {
+  clearTimeout(syncState.timer);
+  if (state.user) syncState.timer = setTimeout(checkSync, delay);
+}
+
+function syncContext() {
+  return JSON.stringify([state.sessionEpoch, state.user?.id, state.currentGroup, state.search,
+    state.currentNote?.id, state.currentNote?.version, state.editRevision, syncState.mutation]);
+}
+
+function noteChanged(note) {
+  const current = state.currentNote;
+  return current && (!note || ["version", "group_id", "is_deleted", "is_pinned", "content_html"]
+    .some(key => current[key] !== note[key]));
+}
+
+function showEditConflict(note) {
+  clearTimeout(state.saveTimer);
+  state.saveTimer = null;
+  if (state.composing) { state.pendingConflict = { note }; return; }
+  state.conflictServer = note;
+  state.localConflictDraft = { ...currentDraft(), id: state.currentNote.id };
+  els.saveState.textContent = "保存冲突";
+  els.saveState.className = "save-state error";
+  if (!els.conflict.open) els.conflict.showModal();
+}
+
+async function checkSync() {
+  if (syncState.busy) { scheduleSync(); return; }
+  if (!state.user || document.visibilityState === "hidden" || syncState.writes || state.savePromise
+      || state.composing || state.localConflictDraft || document.querySelector("dialog[open]")) {
+    scheduleSync(); return;
+  }
+  syncState.busy = true;
+  const context = syncContext();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 12000);
+  const options = { signal: controller.signal };
+  try {
+    const marker = await api("/api/sync", options);
+    if (context !== syncContext()) return;
+    if (marker.user_id !== state.user.id) { showAuth(); return; }
+    if (marker.revision === syncState.revision) return;
+    const { groups } = await api("/api/groups", options);
+    const groupExists = ["home", "trash"].includes(state.currentGroup)
+      || groups.some(group => String(group.id) === String(state.currentGroup));
+    const view = groupExists ? state.currentGroup : "home";
+    const params = new URLSearchParams();
+    if (view === "trash") params.set("trash", "1");
+    else params.set("group_id", view === "home" ? "ungrouped" : view);
+    if (state.search) params.set("q", state.search);
+    const { notes } = await api(`/api/notes?${params}`, options);
+    let note = null;
+    if (state.currentNote) {
+      try { note = (await api(`/api/notes/${state.currentNote.id}`, options)).note; }
+      catch (error) { if (error.status !== 404) throw error; }
+    }
+    const latest = await api("/api/sync", options);
+    // Never apply a response across navigation, typing, saves, or account changes.
+    if (context !== syncContext() || latest.user_id !== marker.user_id || latest.revision !== marker.revision
+        || syncState.writes || state.savePromise || state.composing || document.querySelector("dialog[open]")) return;
+    if (state.dirty) {
+      if (noteChanged(note)) showEditConflict(note);
+      return;
+    }
+    const changed = noteChanged(note);
+    state.groups = groups;
+    state.notes = notes;
+    state.currentGroup = view;
+    if (changed) {
+      const scrollTop = els.content.scrollTop;
+      state.currentNote = note;
+      renderEditor();
+      els.content.scrollTop = scrollTop;
+    }
+    renderGroups();
+    renderGroupSelect();
+    renderNotes();
+    els.listTitle.textContent = viewTitle(view);
+    els.emptyTrash.classList.toggle("hidden", view !== "trash");
+    persistLocation();
+    syncState.revision = marker.revision;
+  } catch (_) {
+    // Offline/background failures are retried without repeatedly interrupting typing.
+  } finally {
+    clearTimeout(timeout);
+    syncState.busy = false;
+    scheduleSync();
+  }
 }
 
 function persistLocation() {
@@ -239,7 +359,10 @@ async function authSubmit(form, endpoint) {
 }
 
 async function loadGroups() {
+  const epoch = state.sessionEpoch;
   const data = await api("/api/groups");
+  if (epoch !== state.sessionEpoch) return;
+  syncState.revision = null;
   state.groups = data.groups;
   renderGroups();
   renderGroupSelect();
@@ -295,8 +418,9 @@ function toggleGroupActionMenu(groupId, button) {
 }
 
 function renderGroupSelect() {
+  const selected = state.dirty ? els.groupSelect.value : state.currentNote?.group_id ?? "";
   els.groupSelect.innerHTML = `<option value="">首页</option>${state.groups.map(group => `<option value="${group.id}">${escapeHtml(group.name)}</option>`).join("")}`;
-  if (state.currentNote) els.groupSelect.value = state.currentNote.group_id ?? "";
+  els.groupSelect.value = selected;
 }
 
 function viewTitle(view) {
@@ -306,7 +430,7 @@ function viewTitle(view) {
 }
 
 async function selectView(view, save = true, updateLocation = true) {
-  if (save) await flushSave();
+  if (save && !(await flushSave())) return;
   state.currentGroup = view;
   state.currentNote = null;
   state.search = "";
@@ -322,12 +446,15 @@ async function selectView(view, save = true, updateLocation = true) {
 }
 
 async function loadNotes() {
+  const context = JSON.stringify([state.sessionEpoch, state.currentGroup, state.search]);
   const params = new URLSearchParams();
   if (state.currentGroup === "trash") params.set("trash", "1");
   else if (state.currentGroup === "home") params.set("group_id", "ungrouped");
   else params.set("group_id", state.currentGroup);
   if (state.search) params.set("q", state.search);
   const data = await api(`/api/notes?${params}`);
+  if (context !== JSON.stringify([state.sessionEpoch, state.currentGroup, state.search])) return;
+  syncState.revision = null;
   state.notes = data.notes;
   renderNotes();
   await loadGroups();
@@ -360,6 +487,9 @@ function renderNotes() {
 
 function clearEditor() {
   clearTimeout(state.saveTimer);
+  state.saveTimer = null;
+  state.dirty = false;
+  state.editRevision++;
   els.editorShell.classList.add("hidden");
   els.editorEmpty.classList.remove("hidden");
   els.content.innerHTML = "";
@@ -367,7 +497,7 @@ function clearEditor() {
 
 async function selectNote(noteId) {
   if (state.currentNote?.id === noteId) { mobileView("editor"); return; }
-  await flushSave();
+  if (!(await flushSave())) return;
   try {
     const data = await api(`/api/notes/${noteId}`);
     state.currentNote = data.note;
@@ -379,6 +509,9 @@ async function selectNote(noteId) {
 }
 
 function renderEditor() {
+  syncState.revision = null;
+  state.dirty = false;
+  state.editRevision++;
   const note = state.currentNote;
   if (!note) return clearEditor();
   els.editorEmpty.classList.add("hidden");
@@ -405,7 +538,7 @@ function updatePinButton(pinned) {
 
 async function newNote() {
   if (state.currentGroup === "trash") await selectView("home");
-  await flushSave();
+  if (!(await flushSave())) return;
   const groupId = /^\d+$/.test(String(state.currentGroup)) ? Number(state.currentGroup) : null;
   try {
     const data = await api("/api/notes", { method: "POST", body: { group_id: groupId } });
@@ -422,12 +555,14 @@ async function newNote() {
 
 function markUnsaved() {
   if (!state.currentNote || state.currentNote.is_deleted) return;
+  state.dirty = true;
+  state.editRevision++;
   const blank = editorIsBlank();
   els.saveState.textContent = blank ? "内容为空，离开后移除" : "未保存";
   els.saveState.className = "save-state unsaved";
   clearTimeout(state.saveTimer);
   state.saveTimer = null;
-  if (blank) return;
+  if (blank || state.composing || state.localConflictDraft) return;
   state.saveTimer = setTimeout(() => saveNow(), 750);
 }
 
@@ -448,8 +583,17 @@ function editorIsBlank() {
 async function saveNow(discardEmpty = false) {
   clearTimeout(state.saveTimer);
   state.saveTimer = null;
+  if (state.composing || state.localConflictDraft) return;
+  if (state.savePromise) {
+    const waitingNote = state.currentNote?.id;
+    await state.savePromise.catch(() => {});
+    if (state.currentNote?.id === waitingNote && state.dirty) return saveNow(discardEmpty);
+    return;
+  }
   if (!state.currentNote || state.currentNote.is_deleted) return;
   const noteId = state.currentNote.id;
+  const editRevision = state.editRevision;
+  const sessionEpoch = state.sessionEpoch;
   const draft = currentDraft();
   const blank = editorIsBlank();
   if (blank && !discardEmpty) {
@@ -465,8 +609,9 @@ async function saveNow(discardEmpty = false) {
   state.savePromise = operation;
   try {
     const data = await operation;
-    if (state.currentNote?.id !== noteId) return;
+    if (state.currentNote?.id !== noteId || state.sessionEpoch !== sessionEpoch) return;
     if (blank) {
+      if (state.editRevision !== editRevision) { showEditConflict(null); return; }
       state.notes = state.notes.filter(note => note.id !== noteId);
       state.currentNote = null;
       clearEditor();
@@ -477,20 +622,19 @@ async function saveNow(discardEmpty = false) {
       return;
     }
     state.currentNote = { ...state.currentNote, ...data.note };
-    els.saveState.textContent = "已保存";
-    els.saveState.className = "save-state";
+    state.dirty = state.editRevision !== editRevision;
+    els.saveState.textContent = state.dirty ? "未保存" : "已保存";
+    els.saveState.className = state.dirty ? "save-state unsaved" : "save-state";
     els.updated.textContent = `更新于 ${formatTime(data.note.updated_at, true)}`;
     const listNote = state.notes.find(note => note.id === noteId);
     if (listNote) Object.assign(listNote, data.note, { preview: data.note.preview });
     state.notes.sort((a, b) => Number(b.is_pinned) - Number(a.is_pinned) || new Date(b.updated_at) - new Date(a.updated_at));
     renderNotes();
   } catch (error) {
-    if (error.code === "edit_conflict") {
-      state.conflictServer = error.data.current;
-      state.localConflictDraft = { ...draft, id: noteId };
-      els.saveState.textContent = "保存冲突";
-      els.saveState.className = "save-state error";
-      els.conflict.showModal();
+    if (state.currentNote?.id !== noteId || state.sessionEpoch !== sessionEpoch) return;
+    state.dirty = true;
+    if (error.code === "edit_conflict" || error.status === 404) {
+      showEditConflict(error.data.current || null);
     } else {
       els.saveState.textContent = "保存失败";
       els.saveState.className = "save-state error";
@@ -503,9 +647,11 @@ async function saveNow(discardEmpty = false) {
 
 async function flushSave() {
   if (state.savePromise) await state.savePromise.catch(() => {});
-  if (!state.currentNote || state.currentNote.is_deleted) return;
+  if (state.localConflictDraft || state.composing) return false;
+  if (!state.currentNote || state.currentNote.is_deleted) return true;
   if (editorIsBlank()) await saveNow(true);
-  else if (state.saveTimer) await saveNow();
+  else if (state.dirty) await saveNow();
+  return !state.dirty && !state.localConflictDraft;
 }
 
 function askInput(title, initial = "", maxLength = 50) {
@@ -797,6 +943,20 @@ function bindEvents() {
   els.clearSearch.addEventListener("click", () => { els.search.value = ""; state.search = ""; els.clearSearch.classList.add("hidden"); loadNotes(); });
 
   els.content.addEventListener("input", markUnsaved);
+  els.content.addEventListener("compositionstart", () => {
+    state.composing = true;
+    clearTimeout(state.saveTimer);
+    state.saveTimer = null;
+  });
+  els.content.addEventListener("compositionend", () => {
+    state.composing = false;
+    markUnsaved();
+    if (state.pendingConflict) {
+      const { note } = state.pendingConflict;
+      state.pendingConflict = null;
+      showEditConflict(note);
+    }
+  });
   els.content.addEventListener("paste", () => setTimeout(markUnsaved));
   els.groupSelect.addEventListener("change", () => { markUnsaved(); saveNow(); });
   els.pin.addEventListener("click", () => { updatePinButton(!els.pin.classList.contains("active")); markUnsaved(); saveNow(); });
@@ -826,7 +986,7 @@ function bindEvents() {
   $("#open-sidebar").addEventListener("click", () => mobileView("sidebar"));
   $("#sidebar-close").addEventListener("click", () => mobileView("list"));
   $("#back-to-list").addEventListener("click", async () => {
-    await flushSave();
+    if (!(await flushSave())) return;
     state.currentNote = null;
     clearEditor();
     renderNotes();
@@ -851,7 +1011,7 @@ function bindEvents() {
   $("#password-form").addEventListener("submit", async event => {
     event.preventDefault();
     try {
-      await flushSave();
+      if (!(await flushSave())) return;
       const body = Object.fromEntries(new FormData(event.target));
       Object.assign(body, factorBody(body.factor));
       await api("/api/account", { method: "PATCH", body }); event.target.reset(); toast("密码已更新");
@@ -859,7 +1019,7 @@ function bindEvents() {
   });
   $("#logout-button").addEventListener("click", async () => {
     if (!canCloseSecurity()) return;
-    await flushSave();
+    if (!(await flushSave())) return;
     try {
       await api("/api/logout", { method: "POST" });
       await api("/api/session");
@@ -876,22 +1036,43 @@ function bindEvents() {
     catch (error) { input.checked = !input.checked; toast(error.message, "error"); }
   });
 
+  els.conflict.addEventListener("cancel", event => event.preventDefault());
   $("#conflict-load").addEventListener("click", () => {
     state.currentNote = state.conflictServer; state.conflictServer = null; state.localConflictDraft = null; els.conflict.close(); renderEditor(); renderNotes(); persistLocation(); toast("已载入服务器版本");
+    syncState.revision = null; scheduleSync(0);
   });
   $("#conflict-copy").addEventListener("click", async () => {
     const draft = state.localConflictDraft; if (!draft) return;
     try {
-      const data = await api("/api/notes", { method: "POST", body: { content_html: `<p><strong>冲突副本</strong></p>${draft.content_html}`, group_id: draft.group_id } });
-      els.conflict.close(); state.conflictServer = null; state.localConflictDraft = null; await loadNotes(); await selectNote(data.note.id); toast("本机内容已保存为新便签");
+      const { groups } = await api("/api/groups");
+      const groupId = groups.some(group => group.id === draft.group_id) ? draft.group_id : null;
+      const data = await api("/api/notes", { method: "POST", body: { content_html: `<p><strong>冲突副本</strong></p>${draft.content_html}`, group_id: groupId } });
+      els.conflict.close(); state.conflictServer = null; state.localConflictDraft = null;
+      state.currentNote = data.note; renderEditor();
+      if (!["home", "trash"].includes(state.currentGroup) && !groups.some(group => String(group.id) === String(state.currentGroup))) state.currentGroup = "home";
+      await loadNotes(); persistLocation(); syncState.revision = null; scheduleSync(0); toast("本机内容已保存为新便签");
     } catch (error) { toast(error.message, "error"); }
   });
 
   window.addEventListener("beforeunload", event => {
     const emptyDraft = state.currentNote && !state.currentNote.is_deleted && editorIsBlank();
-    if (state.saveTimer || state.savePromise || emptyDraft) { event.preventDefault(); event.returnValue = ""; }
+    if (state.dirty || state.localConflictDraft || state.saveTimer || state.savePromise || emptyDraft) { event.preventDefault(); event.returnValue = ""; }
   });
-  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden" && state.saveTimer) saveNow(); });
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden" && state.saveTimer) saveNow();
+    if (document.visibilityState === "visible") scheduleSync(0);
+  });
+  window.addEventListener("online", async () => {
+    if (state.user && state.dirty && !editorIsBlank()) await saveNow();
+    scheduleSync(0);
+  });
+  window.addEventListener("focus", () => scheduleSync(0));
+  try {
+    syncState.channel = new BroadcastChannel("mynote-saved");
+    syncState.channel.onmessage = event => {
+      if (state.user && event.data?.userId === state.user.id) scheduleSync(0);
+    };
+  } catch (_) { /* Periodic checks also work when tab messaging is unavailable. */ }
   document.addEventListener("keydown", event => {
     if (event.key === "Escape" && openGroupActionId !== null) { closeGroupActionMenu(true); return; }
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") { event.preventDefault(); saveNow(); }
@@ -1007,7 +1188,7 @@ function bindSecurityEvents() {
     if (action === "recovery-codes" && !window.confirm("重新生成后，所有旧恢复码立即失效。继续？")) return;
     const form = event.target;
     securitySubmit(form, async () => {
-      await flushSave();
+      if (!(await flushSave())) return;
       const body = Object.fromEntries(new FormData(form));
       Object.assign(body, factorBody(body.factor));
       const data = await api(`/api/mfa/${action}`, { method: "POST", body });
@@ -1030,7 +1211,7 @@ function bindSecurityEvents() {
     event.preventDefault();
     const form = event.target;
     securitySubmit(form, async () => {
-      await flushSave();
+      if (!(await flushSave())) return;
       const data = await api("/api/mfa/enable", { method: "POST", body: Object.fromEntries(new FormData(form)) });
       clearBinding();
       await refreshMfa();

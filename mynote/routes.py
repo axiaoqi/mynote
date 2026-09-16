@@ -494,6 +494,17 @@ def delete_group(group_id: int):
     return jsonify(ok=True)
 
 
+@api.get("/sync")
+@login_required
+def sync_revision():
+    row = get_db().execute(
+        "SELECT sync_revision FROM users WHERE id = ?", (request.current_user["id"],)
+    ).fetchone()
+    response = jsonify(user_id=request.current_user["id"], revision=row["sync_revision"])
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 @api.get("/notes")
 @login_required
 def list_notes():

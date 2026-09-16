@@ -102,6 +102,7 @@ def init_app_database() -> None:
     columns = {row["name"] for row in db.execute("PRAGMA table_info(users)")}
     for name, definition in {
         "auth_version": "INTEGER NOT NULL DEFAULT 0",
+        "sync_revision": "INTEGER NOT NULL DEFAULT 0",
         "totp_secret": "TEXT",
         "totp_pending_secret": "TEXT",
         "totp_pending_until": "INTEGER",
@@ -109,6 +110,17 @@ def init_app_database() -> None:
     }.items():
         if name not in columns:
             db.execute(f"ALTER TABLE users ADD COLUMN {name} {definition}")
+    # Transactional change markers also cover imports and cascading group deletes.
+    for table in ("notes", "note_groups"):
+        for action, row in (("INSERT", "NEW"), ("UPDATE", "NEW"), ("DELETE", "OLD")):
+            db.execute(f"""
+                CREATE TRIGGER IF NOT EXISTS sync_{table}_{action.lower()}
+                AFTER {action} ON {table}
+                BEGIN
+                    UPDATE users SET sync_revision = sync_revision + 1
+                    WHERE id = {row}.user_id;
+                END
+            """)
     db.executescript("""
         CREATE TABLE IF NOT EXISTS recovery_codes (
             user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
