@@ -141,8 +141,9 @@ function mobileView(view) { if (isMobile()) els.workspace.dataset.mobileView = v
 function setLoginPasswordVisible(visible) {
   $("#login-password").type = visible ? "text" : "password";
   const button = $("#login-password-toggle");
-  button.textContent = visible ? "隐藏" : "显示";
+  button.dataset.visible = String(visible);
   button.setAttribute("aria-label", visible ? "隐藏密码" : "显示密码");
+  button.title = visible ? "隐藏密码" : "显示密码";
 }
 
 function switchAuth(tab) {

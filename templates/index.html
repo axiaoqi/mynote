@@ -46,7 +46,10 @@
           <label for="login-password">密码</label>
           <div class="password-field">
             <input id="login-password" name="password" type="password" autocomplete="current-password" minlength="8" maxlength="128" required>
-            <button id="login-password-toggle" class="password-toggle" type="button" aria-controls="login-password" aria-label="显示密码">显示</button>
+            <button id="login-password-toggle" class="password-toggle" type="button" aria-controls="login-password" aria-label="显示密码" title="显示密码" data-visible="false">
+              <svg class="password-eye" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M2.5 12s3.5-7 9.5-7 9.5 7 9.5 7"/><circle cx="12" cy="12" r="3.5"/></svg>
+              <svg class="password-eye-off" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m3 3 18 18M9.5 5.4A10 10 0 0 1 12 5c6 0 9.5 7 9.5 7M2.5 12a20 20 0 0 1 4-4.7M8.6 11a3.5 3.5 0 0 0 4.4 4.4"/></svg>
+            </button>
           </div>
         </div>
         <p class="form-error" aria-live="polite"></p>
