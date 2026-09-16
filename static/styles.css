@@ -49,12 +49,16 @@ input, select { outline: none; }
 input:focus, select:focus { border-color: var(--accent-deep) !important; box-shadow: 0 0 0 3px rgba(242,197,0,.12); }
 .password-field { position: relative; margin-top: 7px; }
 .auth-form .password-field input { margin-top: 0; padding-right: 44px; }
-.password-toggle { position: absolute; top: 1px; right: 1px; bottom: 1px; width: 40px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 0 7px 7px 0; background: transparent; color: #595c64; cursor: pointer; }
+.password-toggle { position: absolute; top: 1px; right: 1px; bottom: 1px; width: 40px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 0 7px 7px 0; background: transparent; color: #595c64; cursor: pointer; opacity: 0; pointer-events: none; transition: opacity .15s ease 2s; }
+.password-field:hover .password-toggle, .password-toggle:focus-visible { opacity: 1; pointer-events: auto; transition-delay: 0s; }
 .password-toggle svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
 .password-toggle .password-eye-off, .password-toggle[data-visible="true"] .password-eye { display: none; }
 .password-toggle[data-visible="true"] .password-eye-off { display: block; }
 .password-toggle:hover, .password-toggle:focus-visible { color: #1677ff; }
 .password-toggle:focus-visible { outline: 2px solid #1677ff; outline-offset: -3px; }
+@media (hover: none), (pointer: coarse) {
+  .password-toggle { opacity: 1; pointer-events: auto; transition: none; }
+}
 .form-error { min-height: 18px; margin: -4px 0 0; color: var(--danger); font-size: 12px; }
 .auth-tip { margin-top: 20px; text-align: center; }
 
