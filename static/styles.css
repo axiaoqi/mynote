@@ -176,12 +176,15 @@ input:focus, select:focus { border-color: var(--accent-deep) !important; box-sha
 .toolbar { min-height: 45px; display: flex; align-items: center; gap: 2px; padding: 5px 20px; overflow-x: auto; overflow-y: hidden; border-bottom: 1px solid var(--line); scrollbar-width: thin; overscroll-behavior-x: contain; -webkit-overflow-scrolling: touch; touch-action: pan-x; }
 .toolbar button { flex: none; min-width: 29px; height: 29px; padding: 0 7px; border: 0; border-radius: 5px; background: transparent; color: #676a71; cursor: pointer; }
 .toolbar button:hover { background: #f0f0f2; color: #25262a; }
+.toolbar button sub { font-size: 10px; line-height: 0; }
+.toolbar button svg { width: 17px; height: 17px; vertical-align: middle; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .toolbar-divider { flex: none; width: 1px; height: 17px; margin: 0 5px; background: #e1e1e4; }
 .editor-document { width: min(820px, 100%); flex: 1; margin: 0 auto; padding: 28px 42px 100px; overflow-y: auto; }
 .note-content { min-height: calc(100vh - 185px); padding: 10px 0 22px; outline: none; font-size: 15px; line-height: 1.75; overflow-wrap: anywhere; }
 .note-content:empty::before { content: attr(data-placeholder); color: #c1c2c5; pointer-events: none; }
 .note-content p { margin: 0 0 .8em; }
 .note-content h1, .note-content h2, .note-content h3 { margin: 1em 0 .5em; line-height: 1.35; }
+.note-content h1 { font-size: 1.8em; }
 .note-content h2 { font-size: 1.45em; }
 .note-content blockquote { margin: 1em 0; padding: 3px 0 3px 14px; border-left: 3px solid var(--accent); color: #686b71; }
 .note-content img { display: block; max-width: 100%; height: auto; margin: 16px 0; border-radius: 6px; }

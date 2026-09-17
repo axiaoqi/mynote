@@ -809,6 +809,44 @@ async function importFile(file) {
   finally { els.importInput.value = ""; }
 }
 
+function normalizeLinkUrl(value) {
+  const input = value.trim();
+  if (!input || /\s/.test(input)) return null;
+  const url = /^[a-z][a-z\d+.-]*:/i.test(input) ? input : `https://${input}`;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol === "mailto:") return parsed.pathname ? url : null;
+    if (["http:", "https:"].includes(parsed.protocol) && parsed.hostname) return url;
+  } catch (_) { /* Invalid addresses are reported by the caller. */ }
+  return null;
+}
+
+function insertEditorLink() {
+  const selection = window.getSelection();
+  const currentRange = selection.rangeCount ? selection.getRangeAt(0) : null;
+  const range = currentRange && els.content.contains(currentRange.commonAncestorContainer)
+    ? currentRange.cloneRange() : document.createRange();
+  if (!currentRange || !els.content.contains(currentRange.commonAncestorContainer)) {
+    range.selectNodeContents(els.content);
+    range.collapse(false);
+  }
+  const input = window.prompt("请输入链接地址（支持网址或 mailto: 邮箱链接）");
+  if (input === null || !input.trim()) return false;
+  const url = normalizeLinkUrl(input);
+  if (!url) {
+    toast("请输入有效的 http://、https:// 或 mailto: 链接", "error");
+    return false;
+  }
+  els.content.focus();
+  selection.removeAllRanges();
+  selection.addRange(range);
+  // A collapsed selection needs visible text; selected text keeps its formatting.
+  if (range.collapsed) {
+    return document.execCommand("insertHTML", false, `<a href="${escapeHtml(url).replace(/"/g, "&quot;")}">${escapeHtml(url)}</a>`);
+  }
+  return document.execCommand("createLink", false, url);
+}
+
 function bindEvents() {
   const swipeWidth = 78;
   let swipeGesture = null;
@@ -975,9 +1013,7 @@ function bindEvents() {
     els.content.focus();
     if (button.dataset.cmd) document.execCommand(button.dataset.cmd, false, button.dataset.value || null);
     else if (button.dataset.special === "link") {
-      const url = window.prompt("请输入链接地址（https://…）");
-      if (url && /^(https?:\/\/|mailto:)/i.test(url)) document.execCommand("createLink", false, url);
-      else if (url) toast("链接需以 http://、https:// 或 mailto: 开头", "error");
+      if (!insertEditorLink()) return;
     } else if (button.dataset.special === "checklist") document.execCommand("insertHTML", false, "<div>☐&nbsp; </div>");
     else if (button.dataset.special === "image") els.imageInput.click();
     markUnsaved();
