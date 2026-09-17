@@ -256,6 +256,7 @@ input:focus, select:focus { border-color: var(--accent-deep) !important; box-sha
   .workspace[data-mobile-view="sidebar"] .sidebar,
   .workspace[data-mobile-view="list"] .note-list-pane,
   .workspace[data-mobile-view="editor"] .editor-pane { display: flex; flex-direction: column; }
+  .note-list-pane, .note-list, .sidebar, .group-list, .editor-header, .editor-document, .editor-empty { touch-action: pan-y pinch-zoom; }
   .sidebar { padding-top: max(12px, env(safe-area-inset-top)); }
   .sidebar-brand .mobile-only { margin-left: auto; }
   .group-more-button { opacity: 1; }

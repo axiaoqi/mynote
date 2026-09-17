@@ -138,6 +138,103 @@ function formatTime(value, includeTime = false) {
 function isMobile() { return window.matchMedia("(max-width: 760px)").matches; }
 function mobileView(view) { if (isMobile()) els.workspace.dataset.mobileView = view; }
 
+async function backToList() {
+  const noteId = state.currentNote?.id;
+  const epoch = state.sessionEpoch;
+  if (!(await flushSave())) return;
+  if (state.currentNote?.id !== noteId || state.sessionEpoch !== epoch) return;
+  state.currentNote = null;
+  clearEditor();
+  renderNotes();
+  persistLocation();
+  mobileView("list");
+}
+
+function bindMobileNavigation(cancelNoteSwipe) {
+  let gesture = null;
+  let suppressClickUntil = 0;
+  let returning = false;
+  const workspace = els.workspace;
+  const blockedTarget = "input, textarea, select, [contenteditable], #toolbar, a, button:not(.nav-item), [role='menu']";
+  const cancel = () => {
+    const previous = gesture;
+    gesture = null;
+    if (previous && workspace.hasPointerCapture(previous.pointerId)) workspace.releasePointerCapture(previous.pointerId);
+  };
+  const canNavigate = () => isMobile() && !state.composing && !document.querySelector("dialog[open]");
+
+  workspace.addEventListener("pointerdown", event => {
+    if (!event.isPrimary) { cancel(); return; }
+    cancel();
+    if (event.pointerType !== "touch" || !canNavigate() || returning) return;
+    const view = workspace.dataset.mobileView;
+    if (!["list", "sidebar", "editor"].includes(view)) return;
+    // Touch hit testing may expand the editable element into the left gutter.
+    const inEditorGutter = view === "editor" && event.target.closest("[contenteditable]") === els.content
+      && event.clientX < els.content.getBoundingClientRect().left;
+    if ((event.target.closest(blockedTarget) && !inEditorGutter) || event.target.closest(".note-swipe-row.swiped")) return;
+    if (window.getSelection()?.toString()) return;
+    gesture = {
+      pointerId: event.pointerId, view, startX: event.clientX, startY: event.clientY,
+      started: Date.now(), direction: view === "sidebar" ? -1 : 1, dragging: false,
+    };
+  }, true);
+
+  workspace.addEventListener("pointermove", event => {
+    const current = gesture;
+    if (!current || current.pointerId !== event.pointerId) return;
+    if (!canNavigate() || workspace.dataset.mobileView !== current.view) { cancel(); return; }
+    const dx = event.clientX - current.startX;
+    const dy = event.clientY - current.startY;
+    if (!current.dragging) {
+      // Lock the direction once, leaving vertical scrolling and left-swipe delete alone.
+      if (Date.now() - current.started > 500 || (Math.abs(dy) > 12 && Math.abs(dy) >= Math.abs(dx))) { cancel(); return; }
+      if (Math.abs(dx) < 12) return;
+      if (dx * current.direction <= 0 || Math.abs(dx) < Math.abs(dy) * 1.5) { cancel(); return; }
+      current.dragging = true;
+      cancelNoteSwipe();
+      workspace.setPointerCapture(event.pointerId);
+    }
+    suppressClickUntil = Date.now() + 400;
+    event.preventDefault();
+    event.stopPropagation();
+  }, { capture: true, passive: false });
+
+  workspace.addEventListener("pointerup", async event => {
+    const current = gesture;
+    if (!current || current.pointerId !== event.pointerId) return;
+    const dx = event.clientX - current.startX;
+    const dy = event.clientY - current.startY;
+    cancel();
+    if (!current.dragging) return;
+    suppressClickUntil = Date.now() + 400;
+    event.preventDefault();
+    event.stopPropagation();
+    if (!canNavigate() || workspace.dataset.mobileView !== current.view) return;
+    if (dx * current.direction < 72 || Math.abs(dx) < Math.abs(dy) * 1.5 || Date.now() - current.started > 1200) return;
+    closeGroupActionMenu();
+    if (current.view === "editor") {
+      returning = true;
+      try { await backToList(); } finally { returning = false; }
+    } else {
+      mobileView(current.view === "list" ? "sidebar" : "list");
+    }
+  }, true);
+  for (const type of ["pointercancel", "lostpointercapture"]) {
+    workspace.addEventListener(type, event => {
+      if (gesture?.pointerId === event.pointerId && (type === "pointercancel" || event.target === workspace)) cancel();
+    }, true);
+  }
+  workspace.addEventListener("click", event => {
+    if (event.detail && Date.now() < suppressClickUntil) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  }, true);
+  window.addEventListener("resize", cancel);
+  window.addEventListener("blur", cancel);
+}
+
 function setLoginPasswordVisible(visible) {
   $("#login-password").type = visible ? "text" : "password";
   const button = $("#login-password-toggle");
@@ -860,6 +957,12 @@ function bindEvents() {
     if (openSwipeRow === row) openSwipeRow = null;
   };
 
+  bindMobileNavigation(() => {
+    if (swipeGesture) closeSwipeRow(swipeGesture.row);
+    swipeGesture = null;
+    closeSwipeRow();
+  });
+
   els.loginTab.addEventListener("click", () => switchAuth("login"));
   els.registerTab.addEventListener("click", () => switchAuth("register"));
   $("#login-password-toggle").addEventListener("click", () => {
@@ -1022,14 +1125,7 @@ function bindEvents() {
 
   $("#open-sidebar").addEventListener("click", () => mobileView("sidebar"));
   $("#sidebar-close").addEventListener("click", () => mobileView("list"));
-  $("#back-to-list").addEventListener("click", async () => {
-    if (!(await flushSave())) return;
-    state.currentNote = null;
-    clearEditor();
-    renderNotes();
-    persistLocation();
-    mobileView("list");
-  });
+  $("#back-to-list").addEventListener("click", backToList);
   $("#user-menu-button").addEventListener("click", openSettings);
   $("#settings-close").addEventListener("click", () => {
     if (canCloseSecurity()) els.settings.close();
