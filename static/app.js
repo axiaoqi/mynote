@@ -1082,7 +1082,7 @@ function bindEvents() {
     clearTimeout(searchTimer); state.search = els.search.value.trim(); els.clearSearch.classList.toggle("hidden", !state.search);
     searchTimer = setTimeout(() => loadNotes().catch(error => toast(error.message, "error")), 300);
   });
-  els.clearSearch.addEventListener("click", () => { els.search.value = ""; state.search = ""; els.clearSearch.classList.add("hidden"); loadNotes(); });
+  els.clearSearch.addEventListener("click", () => { clearTimeout(searchTimer); els.search.value = ""; state.search = ""; els.clearSearch.classList.add("hidden"); els.search.focus(); loadNotes(); });
 
   els.content.addEventListener("input", markUnsaved);
   els.content.addEventListener("compositionstart", () => {
