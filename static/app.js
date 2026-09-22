@@ -342,10 +342,7 @@ async function checkSync() {
     const groupExists = ["home", "trash"].includes(state.currentGroup)
       || groups.some(group => String(group.id) === String(state.currentGroup));
     const view = groupExists ? state.currentGroup : "home";
-    const params = new URLSearchParams();
-    if (view === "trash") params.set("trash", "1");
-    else params.set("group_id", view === "home" ? "ungrouped" : view);
-    if (state.search) params.set("q", state.search);
+    const params = noteListParams(view);
     const { notes } = await api(`/api/notes?${params}`, options);
     let note = null;
     if (state.currentNote) {
@@ -533,6 +530,7 @@ async function selectView(view, save = true, updateLocation = true) {
   state.currentNote = null;
   state.search = "";
   els.search.value = "";
+  els.search.placeholder = view === "trash" ? "搜索回收站" : "搜索全部便签";
   els.clearSearch.classList.add("hidden");
   els.listTitle.textContent = viewTitle(view);
   els.emptyTrash.classList.toggle("hidden", view !== "trash");
@@ -543,19 +541,24 @@ async function selectView(view, save = true, updateLocation = true) {
   if (updateLocation) persistLocation();
 }
 
+function noteListParams(view = state.currentGroup) {
+  const params = new URLSearchParams();
+  if (view === "trash") params.set("trash", "1");
+  else if (!state.search) params.set("group_id", view === "home" ? "ungrouped" : view);
+  if (state.search) params.set("q", state.search);
+  return params;
+}
+
 async function loadNotes() {
   const context = JSON.stringify([state.sessionEpoch, state.currentGroup, state.search]);
-  const params = new URLSearchParams();
-  if (state.currentGroup === "trash") params.set("trash", "1");
-  else if (state.currentGroup === "home") params.set("group_id", "ungrouped");
-  else params.set("group_id", state.currentGroup);
-  if (state.search) params.set("q", state.search);
+  const params = noteListParams();
   const data = await api(`/api/notes?${params}`);
+  if (context !== JSON.stringify([state.sessionEpoch, state.currentGroup, state.search])) return;
+  await loadGroups();
   if (context !== JSON.stringify([state.sessionEpoch, state.currentGroup, state.search])) return;
   syncState.revision = null;
   state.notes = data.notes;
   renderNotes();
-  await loadGroups();
 }
 
 function renderNotes() {
@@ -572,14 +575,17 @@ function renderNotes() {
       <article class="note-card ${state.currentNote?.id === note.id ? "active" : ""}" data-note-id="${note.id}" tabindex="0">
         <div class="note-card-title-row">${note.is_pinned ? '<span class="pin-mark">◆</span>' : ""}<h3>${escapeHtml(lead)}</h3></div>
         <p>${escapeHtml(remainder)}</p>
-        <time datetime="${escapeHtml(note.updated_at)}">${formatTime(note.updated_at)}</time>
+        <div class="note-card-meta">
+          <time datetime="${escapeHtml(note.updated_at)}">${formatTime(note.updated_at)}</time>
+          ${state.search ? `<span class="note-card-group" title="${escapeHtml(viewTitle(note.group_id ?? "home"))}">${escapeHtml(viewTitle(note.group_id ?? "home"))}</span>` : ""}
+        </div>
       </article>
     </div>`;
   }).join("");
   els.listEmpty.classList.toggle("hidden", state.notes.length > 0);
   if (!state.notes.length) {
-    $("#note-list-empty strong").textContent = state.currentGroup === "trash" ? "回收站是空的" : state.search ? "没有匹配的便签" : "这里还没有便签";
-    $("#note-list-empty span").textContent = state.currentGroup === "trash" ? "删除的便签会暂存在这里" : state.search ? "换个关键词试试" : "点击“新建”记录第一条内容";
+    $("#note-list-empty strong").textContent = state.search ? "没有匹配的便签" : state.currentGroup === "trash" ? "回收站是空的" : "这里还没有便签";
+    $("#note-list-empty span").textContent = state.search ? "换个关键词试试" : state.currentGroup === "trash" ? "删除的便签会暂存在这里" : "点击“新建”记录第一条内容";
   }
 }
 
@@ -794,7 +800,7 @@ async function renameGroup(groupId) {
   if (!name || name === group.name) return;
   try {
     await api(`/api/groups/${groupId}`, { method: "PATCH", body: { name } });
-    group.name = name; renderGroups(); renderGroupSelect(); els.listTitle.textContent = viewTitle(state.currentGroup);
+    group.name = name; renderGroups(); renderGroupSelect(); renderNotes(); els.listTitle.textContent = viewTitle(state.currentGroup);
   } catch (error) { toast(error.message, "error"); }
 }
 

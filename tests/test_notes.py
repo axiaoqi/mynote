@@ -161,3 +161,47 @@ def test_home_is_default_group_not_all_notes(client):
     grouped_ids = [item["id"] for item in client.get(f"/api/notes?group_id={group['id']}").get_json()["notes"]]
     assert home_ids == [home_note["id"]]
     assert grouped_ids == [grouped_note["id"]]
+
+
+def test_search_spans_groups_but_isolates_trash_and_accounts(app, client):
+    register(client)
+    groups = [
+        api_request(client, "POST", "/api/groups", json={"name": name}).get_json()["group"]
+        for name in ["工作", "生活"]
+    ]
+    active = [create_note(client, "<p>火箭计划</p>", group_id) for group_id in [None, *[g["id"] for g in groups]]]
+    create_note(client, "<p>不相关内容</p>", groups[0]["id"])
+    deleted = [create_note(client, "<p>火箭归档</p>", group_id) for group_id in [None, groups[1]["id"]]]
+    for note in deleted:
+        assert api_request(client, "DELETE", f"/api/notes/{note['id']}").status_code == 200
+    other = app.test_client()
+    register(other, "family", "familypass123", "家人")
+    create_note(other, "<p>火箭私密内容</p>")
+    private_trash = create_note(other, "<p>火箭私密归档</p>")
+    api_request(other, "DELETE", f"/api/notes/{private_trash['id']}")
+
+    for group_id in [None, "ungrouped", *[g["id"] for g in groups]]:
+        query = {"q": " 火箭 "}
+        if group_id is not None:
+            query["group_id"] = group_id
+        response = client.get("/api/notes", query_string=query)
+        assert response.status_code == 200
+        assert {n["id"] for n in response.get_json()["notes"]} == {n["id"] for n in active}
+        query["trash"] = "1"
+        assert {n["id"] for n in client.get("/api/notes", query_string=query).get_json()["notes"]} == {n["id"] for n in deleted}
+
+    # Clearing (or entering only whitespace) restores ordinary group browsing.
+    for query in ["", "   "]:
+        notes = client.get("/api/notes", query_string={"q": query, "group_id": groups[1]["id"]}).get_json()["notes"]
+        assert [n["id"] for n in notes] == [active[2]["id"]]
+    assert client.get("/api/notes", query_string={"q": "不存在"}).get_json()["notes"] == []
+
+
+def test_global_search_treats_sql_wildcards_as_literal_text(client):
+    register(client)
+    group = api_request(client, "POST", "/api/groups", json={"name": "工作"}).get_json()["group"]
+    literal = create_note(client, "<p>100%_done\\path</p>", group["id"])
+    create_note(client, "<p>100xxdone/path</p>")
+    for query in ["%", "_", "\\"]:
+        notes = client.get("/api/notes", query_string={"q": query}).get_json()["notes"]
+        assert [n["id"] for n in notes] == [literal["id"]]

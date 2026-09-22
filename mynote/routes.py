@@ -514,7 +514,8 @@ def list_notes():
     group_value = request.args.get("group_id")
     clauses = ["user_id = ?", "is_deleted = ?"]
     params: list = [user_id, 1 if trash else 0]
-    if not trash:
+    # Searching spans all active groups; ordinary browsing stays group-scoped.
+    if not trash and not query:
         if group_value in {None, "", "home", "ungrouped"}:
             clauses.append("group_id IS NULL")
         else:

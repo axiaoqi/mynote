@@ -54,6 +54,32 @@ test('remote saved content updates a clean editor and an unchanged revision only
   assert.deepEqual(t.calls, ['/api/sync']);
 });
 
+test('search stays global during both loading and background sync, with trash separate', async () => {
+  for (const view of ['home', 42, 'trash']) {
+    const t = setup();
+    t.state.currentGroup = view;
+    t.state.search = '火箭';
+    const api = t.ctx.api;
+    t.ctx.api = async url => url === '/api/groups' ? { groups: [{ id: 42, name: '工作' }] } : api(url);
+    await t.ctx.loadNotes();
+    await t.ctx.checkSync();
+    const requests = t.calls.filter(url => url.startsWith('/api/notes?'));
+    assert.equal(requests.length, 2);
+    for (const url of requests) {
+      const params = new URLSearchParams(url.split('?')[1]);
+      assert.equal(params.get('q'), '火箭');
+      assert.equal(params.has('group_id'), false);
+      assert.equal(params.get('trash'), view === 'trash' ? '1' : null);
+    }
+    t.calls.length = 0;
+    t.state.search = '';
+    await t.ctx.loadNotes();
+    const params = new URLSearchParams(t.calls.find(url => url.startsWith('/api/notes?')).split('?')[1]);
+    assert.equal(params.has('q'), false);
+    assert.equal(params.get('group_id'), view === 'trash' ? null : view === 'home' ? 'ungrouped' : '42');
+  }
+});
+
 test('unsaved content is preserved as a conflict, including a cleared editor', async () => {
   for (const draft of ['local typing', '']) {
     const t = setup();
