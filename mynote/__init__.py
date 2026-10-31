@@ -11,6 +11,8 @@ from werkzeug.security import generate_password_hash
 from .db import close_db, init_app_database
 from .routes import api, pages
 from .mfa import init_security
+from .vault import init_vault_database
+from .backups import init_backup_database, start_backup_worker
 
 
 def _persistent_secret(instance_path: Path) -> str:
@@ -78,5 +80,9 @@ def create_app(test_config: dict | None = None) -> Flask:
 
     with app.app_context():
         init_app_database()
+        init_vault_database()
+        init_backup_database()
+
+    start_backup_worker(app)
 
     return app

@@ -34,16 +34,18 @@ CREATE TABLE IF NOT EXISTS note_groups (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
+    is_private INTEGER NOT NULL DEFAULT 0,
     sort_order INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    UNIQUE(user_id, name COLLATE NOCASE)
+    UNIQUE(user_id, is_private, name COLLATE NOCASE)
 );
 
 CREATE TABLE IF NOT EXISTS notes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     group_id INTEGER REFERENCES note_groups(id) ON DELETE SET NULL,
+    is_private INTEGER NOT NULL DEFAULT 0,
     title TEXT NOT NULL DEFAULT '',
     content_html TEXT NOT NULL DEFAULT '',
     plain_text TEXT NOT NULL DEFAULT '',
@@ -99,6 +101,37 @@ def init_app_database() -> None:
     db = get_db()
     db.execute("PRAGMA journal_mode = WAL")
     db.executescript(SCHEMA)
+    if 'is_private' not in {row['name'] for row in db.execute('PRAGMA table_info(notes)')}:
+        db.execute('ALTER TABLE notes ADD COLUMN is_private INTEGER NOT NULL DEFAULT 0')
+        db.commit()
+    if 'is_private' not in {row['name'] for row in db.execute('PRAGMA table_info(note_groups)')}:
+        # Rebuild the old unique constraint without cascading changes into notes.
+        db.commit()
+        db.execute('PRAGMA foreign_keys = OFF')
+        try:
+            db.executescript("""
+                BEGIN IMMEDIATE;
+                CREATE TABLE note_groups_scoped (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    name TEXT NOT NULL,
+                    is_private INTEGER NOT NULL DEFAULT 0,
+                    sort_order INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                    UNIQUE(user_id, is_private, name COLLATE NOCASE)
+                );
+                INSERT INTO note_groups_scoped(id, user_id, name, sort_order, created_at, updated_at)
+                    SELECT id, user_id, name, sort_order, created_at, updated_at FROM note_groups;
+                DROP TABLE note_groups;
+                ALTER TABLE note_groups_scoped RENAME TO note_groups;
+                COMMIT;
+            """)
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.execute('PRAGMA foreign_keys = ON')
     columns = {row["name"] for row in db.execute("PRAGMA table_info(users)")}
     for name, definition in {
         "auth_version": "INTEGER NOT NULL DEFAULT 0",

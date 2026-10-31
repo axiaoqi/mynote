@@ -93,7 +93,7 @@ test('right swipe on a note opens navigation, left swipe on a group closes it wi
   await swipe(90, card.y + 30, 150);
   await expectView('sidebar');
   assert.deepEqual(await page.evaluate(() => window.selections), []);
-  const group = await page.locator('[data-view="home"]').boundingBox();
+  const group = await page.locator('.main-nav [data-view="home"]').boundingBox();
   await swipe(260, group.y + 18, -150);
   await expectView('list');
   assert.deepEqual(await page.evaluate(() => window.selections), []);

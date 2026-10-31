@@ -15,6 +15,7 @@ from functools import wraps
 from pathlib import Path, PurePosixPath
 
 import markdown
+import pyzipper
 from flask import (
     Blueprint,
     Response,
@@ -222,6 +223,7 @@ def _group_json(row) -> dict:
     return {
         "id": row["id"],
         "name": row["name"],
+        "is_private": bool(row['is_private']),
         "sort_order": row["sort_order"],
         "note_count": row["note_count"] if "note_count" in row.keys() else 0,
         "updated_at": row["updated_at"],
@@ -232,6 +234,7 @@ def _note_json(row, detail: bool = True) -> dict:
     result = {
         "id": row["id"],
         "group_id": row["group_id"],
+        "is_private": bool(row['is_private']),
         "preview": row["plain_text"][:140],
         "is_pinned": bool(row["is_pinned"]),
         "is_deleted": bool(row["is_deleted"]),
@@ -242,6 +245,8 @@ def _note_json(row, detail: bool = True) -> dict:
     }
     if detail:
         result["content_html"] = row["content_html"]
+    if 'group_name' in row.keys():
+        result['group_name'] = row['group_name']
     return result
 
 
@@ -418,26 +423,44 @@ def admin_update_user(user_id: int):
     return jsonify(ok=True)
 
 
+def _private_scope():
+    private = request.args.get('space', 'normal') == 'private'
+    if private:
+        from .vault import require_vault
+        require_vault(request.current_user)
+    return int(private)
+
+
+def _protect_row(row):
+    if row and row['is_private']:
+        from .vault import require_vault
+        require_vault(request.current_user)
+    return row
+
+
 @api.get("/groups")
 @login_required
 def list_groups():
+    private = _private_scope()
     rows = get_db().execute(
         """
         SELECT g.*, COUNT(n.id) AS note_count
         FROM note_groups g
         LEFT JOIN notes n ON n.group_id = g.id AND n.is_deleted = 0
-        WHERE g.user_id = ?
+        WHERE g.user_id = ? AND g.is_private = ?
         GROUP BY g.id
         ORDER BY g.sort_order, g.created_at
         """,
-        (request.current_user["id"],),
+        (request.current_user["id"], private),
     ).fetchall()
-    return jsonify(groups=[_group_json(row) for row in rows])
+    result = dict(groups=[_group_json(row) for row in rows])
+    return jsonify(result)
 
 
 @api.post("/groups")
 @login_required
 def create_group():
+    private = _private_scope()
     data = request.get_json(silent=True) or {}
     name = str(data.get("name", "")).strip()
     if not name or len(name) > 50:
@@ -449,8 +472,8 @@ def create_group():
     ).fetchone()["next_order"]
     try:
         cursor = db.execute(
-            "INSERT INTO note_groups(user_id, name, sort_order) VALUES (?, ?, ?)",
-            (request.current_user["id"], name, order),
+            "INSERT INTO note_groups(user_id, name, sort_order, is_private) VALUES (?, ?, ?, ?)",
+            (request.current_user["id"], name, order, private),
         )
         db.commit()
     except sqlite3.IntegrityError:
@@ -459,9 +482,32 @@ def create_group():
     return jsonify(group=_group_json(row)), 201
 
 
+@api.post('/groups/reorder')
+@login_required
+def reorder_groups():
+    from .security import SecurityError
+    from .vault import require_vault
+    private = _private_scope()
+    ids = (request.get_json(silent=True) or {}).get('ids')
+    if not isinstance(ids, list) or len(ids) > 2000 or any(type(group_id) is not int or group_id <= 0 for group_id in ids) or len(set(ids)) != len(ids):
+        raise SecurityError('分组顺序无效，请刷新后重试', 'invalid_group_order')
+    with atomic() as db:
+        user = current_user_locked()
+        if private:
+            require_vault(user)
+        owned = {row['id'] for row in db.execute('SELECT id FROM note_groups WHERE user_id = ? AND is_private = ?', (user['id'], private))}
+        if set(ids) != owned:
+            raise SecurityError('分组列表已变化，请刷新后重新排序', 'group_order_changed', 409)
+        timestamp = utcnow()
+        db.executemany('UPDATE note_groups SET sort_order = ?, updated_at = ? WHERE id = ? AND user_id = ? AND is_private = ?',
+                       [(index, timestamp, group_id, user['id'], private) for index, group_id in enumerate(ids)])
+    return jsonify(ok=True)
+
+
 @api.patch("/groups/<int:group_id>")
 @login_required
 def update_group(group_id: int):
+    _protect_row(get_db().execute('SELECT * FROM note_groups WHERE id = ? AND user_id = ?', (group_id, request.current_user['id'])).fetchone())
     data = request.get_json(silent=True) or {}
     name = str(data.get("name", "")).strip()
     if not name or len(name) > 50:
@@ -483,6 +529,7 @@ def update_group(group_id: int):
 @api.delete("/groups/<int:group_id>")
 @login_required
 def delete_group(group_id: int):
+    _protect_row(get_db().execute('SELECT * FROM note_groups WHERE id = ? AND user_id = ?', (group_id, request.current_user['id'])).fetchone())
     db = get_db()
     cursor = db.execute(
         "DELETE FROM note_groups WHERE id = ? AND user_id = ?",
@@ -497,6 +544,7 @@ def delete_group(group_id: int):
 @api.get("/sync")
 @login_required
 def sync_revision():
+    _private_scope()
     row = get_db().execute(
         "SELECT sync_revision FROM users WHERE id = ?", (request.current_user["id"],)
     ).fetchone()
@@ -508,14 +556,21 @@ def sync_revision():
 @api.get("/notes")
 @login_required
 def list_notes():
+    private = _private_scope()
+    from .vault import grant_expires_at
+    expires_at = grant_expires_at(request.current_user)
     user_id = request.current_user["id"]
     trash = request.args.get("trash", "0") == "1"
     query = (request.args.get("q") or "").strip()[:100]
     group_value = request.args.get("group_id")
+    all_private = private and group_value == 'all'
     clauses = ["user_id = ?", "is_deleted = ?"]
     params: list = [user_id, 1 if trash else 0]
+    if private or trash or not query or expires_at is None:
+        clauses.append('is_private = ?')
+        params.append(private)
     # Searching spans all active groups; ordinary browsing stays group-scoped.
-    if not trash and not query:
+    if not trash and not query and not all_private:
         if group_value in {None, "", "home", "ungrouped"}:
             clauses.append("group_id IS NULL")
         else:
@@ -524,7 +579,7 @@ def list_notes():
             except ValueError:
                 return jsonify(error="分组参数无效", code="invalid_group"), 400
             owned = get_db().execute(
-                "SELECT 1 FROM note_groups WHERE id = ? AND user_id = ?", (group_id, user_id)
+                "SELECT 1 FROM note_groups WHERE id = ? AND user_id = ? AND is_private = ?", (group_id, user_id, private)
             ).fetchone()
             if not owned:
                 return jsonify(error="分组不存在", code="not_found"), 404
@@ -535,16 +590,18 @@ def list_notes():
         escaped_query = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         params.append(f"%{escaped_query}%")
     rows = get_db().execute(
-        f"SELECT * FROM notes WHERE {' AND '.join(clauses)} "
+        f"SELECT notes.*, (SELECT name FROM note_groups WHERE id = notes.group_id) AS group_name FROM notes WHERE {' AND '.join(clauses)} "
         "ORDER BY is_pinned DESC, updated_at DESC, id DESC LIMIT 1000",
         params,
     ).fetchall()
-    return jsonify(notes=[_note_json(row, detail=False) for row in rows])
+    result = dict(notes=[_note_json(row, detail=False) for row in rows], vault_expires_at=expires_at)
+    return jsonify(result)
 
 
 @api.post("/notes")
 @login_required
 def create_note():
+    private = _private_scope()
     data = request.get_json(silent=True) or {}
     user_id = request.current_user["id"]
     group_id = data.get("group_id")
@@ -552,7 +609,7 @@ def create_note():
         group_id = None
     if group_id is not None:
         group = get_db().execute(
-            "SELECT id FROM note_groups WHERE id = ? AND user_id = ?", (group_id, user_id)
+            "SELECT id FROM note_groups WHERE id = ? AND user_id = ? AND is_private = ?", (group_id, user_id, private)
         ).fetchone()
         if not group:
             return jsonify(error="分组不存在", code="not_found"), 404
@@ -561,10 +618,10 @@ def create_note():
     db = get_db()
     cursor = db.execute(
         """
-        INSERT INTO notes(user_id, group_id, title, content_html, plain_text, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO notes(user_id, group_id, title, content_html, plain_text, created_at, updated_at, is_private)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (user_id, group_id, "", content_html, html_to_text(content_html), now, now),
+        (user_id, group_id, "", content_html, html_to_text(content_html), now, now, private),
     )
     db.commit()
     row = db.execute("SELECT * FROM notes WHERE id = ?", (cursor.lastrowid,)).fetchone()
@@ -576,7 +633,7 @@ def _owned_note(note_id: int, include_deleted: bool = True):
     params = [note_id, request.current_user["id"]]
     if not include_deleted:
         sql += " AND is_deleted = 0"
-    return get_db().execute(sql, params).fetchone()
+    return _protect_row(get_db().execute(sql, params).fetchone())
 
 
 @api.get("/notes/<int:note_id>")
@@ -627,8 +684,8 @@ def update_note(note_id: int):
             group_id = None
         if group_id is not None:
             group = get_db().execute(
-                "SELECT 1 FROM note_groups WHERE id = ? AND user_id = ?",
-                (group_id, request.current_user["id"]),
+                "SELECT 1 FROM note_groups WHERE id = ? AND user_id = ? AND is_private = ?",
+                (group_id, request.current_user["id"], existing['is_private']),
             ).fetchone()
             if not group:
                 return jsonify(error="分组不存在", code="not_found"), 404
@@ -738,6 +795,8 @@ def trash_note(note_id: int):
 @api.post("/notes/<int:note_id>/restore")
 @login_required
 def restore_note(note_id: int):
+    if not _owned_note(note_id):
+        return jsonify(error='便签不存在', code='not_found'), 404
     now = utcnow()
     db = get_db()
     cursor = db.execute(
@@ -765,6 +824,7 @@ def _remove_attachment_files(rows) -> None:
 @api.delete("/notes/<int:note_id>/permanent")
 @login_required
 def permanently_delete_note(note_id: int):
+    _owned_note(note_id)
     db = get_db()
     note = db.execute(
         "SELECT id FROM notes WHERE id = ? AND user_id = ? AND is_deleted = 1",
@@ -785,17 +845,18 @@ def permanently_delete_note(note_id: int):
 @api.delete("/trash")
 @login_required
 def empty_trash():
+    private = _private_scope()
     db = get_db()
     user_id = request.current_user["id"]
     files = db.execute(
         """
         SELECT a.stored_name FROM attachments a
         JOIN notes n ON n.id = a.note_id
-        WHERE n.user_id = ? AND n.is_deleted = 1
+        WHERE n.user_id = ? AND n.is_deleted = 1 AND n.is_private = ?
         """,
-        (user_id,),
+        (user_id, private),
     ).fetchall()
-    cursor = db.execute("DELETE FROM notes WHERE user_id = ? AND is_deleted = 1", (user_id,))
+    cursor = db.execute("DELETE FROM notes WHERE user_id = ? AND is_deleted = 1 AND is_private = ?", (user_id, private))
     db.commit()
     _remove_attachment_files(files)
     return jsonify(ok=True, deleted=cursor.rowcount)
@@ -857,6 +918,7 @@ def download_attachment(attachment_id: int):
     ).fetchone()
     if not row:
         abort(404)
+    _owned_note(row['note_id'])
     base = Path(current_app.config["UPLOAD_FOLDER"]).resolve()
     path = (base / row["stored_name"]).resolve()
     if base not in path.parents or not path.exists():
@@ -869,11 +931,12 @@ def download_attachment(attachment_id: int):
 def delete_attachment(attachment_id: int):
     db = get_db()
     row = db.execute(
-        "SELECT stored_name FROM attachments WHERE id = ? AND user_id = ?",
+        "SELECT stored_name, note_id FROM attachments WHERE id = ? AND user_id = ?",
         (attachment_id, request.current_user["id"]),
     ).fetchone()
     if not row:
         return jsonify(error="附件不存在", code="not_found"), 404
+    _owned_note(row['note_id'])
     db.execute("DELETE FROM attachments WHERE id = ?", (attachment_id,))
     db.commit()
     _remove_attachment_files([row])
@@ -883,7 +946,7 @@ def delete_attachment(attachment_id: int):
 def _export_manifest(user_id: int) -> dict:
     db = get_db()
     groups = db.execute(
-        "SELECT id, name, sort_order, created_at, updated_at FROM note_groups WHERE user_id = ? ORDER BY sort_order, id",
+        "SELECT id, name, is_private, sort_order, created_at, updated_at FROM note_groups WHERE user_id = ? ORDER BY sort_order, id",
         (user_id,),
     ).fetchall()
     notes = db.execute(
@@ -895,7 +958,7 @@ def _export_manifest(user_id: int) -> dict:
     ).fetchall()
     return {
         "format": "mynote-backup",
-        "version": 1,
+        "version": 2 if any(row["is_private"] for row in [*groups, *notes]) else 1,
         "exported_at": utcnow(),
         "groups": [dict(row) for row in groups],
         "notes": [dict(row) for row in notes],
@@ -906,7 +969,10 @@ def _export_manifest(user_id: int) -> dict:
 @api.get("/export/json")
 @login_required
 def export_json():
-    payload = json.dumps(_export_manifest(request.current_user["id"]), ensure_ascii=False, indent=2)
+    from .vault import require_private_export
+    require_private_export(request.current_user)
+    manifest = _export_manifest(request.current_user["id"])
+    payload = json.dumps(manifest, ensure_ascii=False, indent=2)
     return Response(
         payload,
         mimetype="application/json; charset=utf-8",
@@ -914,20 +980,43 @@ def export_json():
     )
 
 
+def _export_password():
+    from .security import SecurityError
+    password = str((request.get_json(silent=True) or {}).get('password', ''))
+    if password and not 8 <= len(password) <= 128:
+        raise SecurityError('ZIP 密码长度需为 8–128 位', 'invalid_password')
+    return password
+
+
+def _zip_writer(output, password):
+    archive = pyzipper.AESZipFile(output, 'w', compression=pyzipper.ZIP_DEFLATED)
+    if password:
+        archive.setpassword(password.encode('utf-8'))
+        archive.setencryption(pyzipper.WZ_AES, nbits=256)
+    return archive
+
+
 @api.get("/export/markdown")
+@api.post("/export/markdown")
 @login_required
 def export_markdown():
+    from .vault import require_private_export, has_private_data
+    from .security import SecurityError
+    require_private_export(request.current_user)
+    password = _export_password()
+    if has_private_data(request.current_user['id']) and not password:
+        raise SecurityError('包含账号密码的 ZIP 请设置解压密码', 'zip_password_required')
     db = get_db()
     rows = db.execute(
-        "SELECT plain_text, updated_at FROM notes WHERE user_id = ? AND is_deleted = 0 ORDER BY updated_at DESC",
+        "SELECT plain_text, is_private, updated_at FROM notes WHERE user_id = ? AND is_deleted = 0 ORDER BY updated_at DESC",
         (request.current_user["id"],),
     ).fetchall()
     output = io.BytesIO()
     used_names: set[str] = set()
-    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+    with _zip_writer(output, password) as archive:
         for index, row in enumerate(rows, start=1):
             first_line = next((line.strip() for line in row["plain_text"].splitlines() if line.strip()), "")
-            base = safe_filename_part(first_line, f"note-{index}")
+            base = f"note-{index}" if password else safe_filename_part(first_line, f"note-{index}")
             filename = f"{base}.md"
             suffix = 2
             while filename.lower() in used_names:
@@ -935,34 +1024,50 @@ def export_markdown():
                 suffix += 1
             used_names.add(filename.lower())
             content = f"{row['plain_text']}\n"
-            archive.writestr(filename, content.encode("utf-8"))
+            archive.writestr(("账号密码/" if row["is_private"] else "") + filename, content.encode("utf-8"))
     output.seek(0)
     return send_file(output, mimetype="application/zip", as_attachment=True, download_name="mynote-markdown.zip")
 
 
 @api.get("/export/backup")
+@api.post("/export/backup")
 @login_required
 def export_backup():
+    from .vault import require_private_export, has_private_data
+    from .security import SecurityError
     user_id = request.current_user["id"]
-    manifest = _export_manifest(user_id)
-    output = io.BytesIO()
-    base = Path(current_app.config["UPLOAD_FOLDER"]).resolve()
-    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8"))
-        for item in manifest["attachments"]:
-            path = (base / item["stored_name"]).resolve()
-            if base in path.parents and path.exists():
-                archive.write(path, f"attachments/{item['id']}/{safe_filename_part(item['original_name'], 'image')}")
-    output.seek(0)
+    require_private_export(request.current_user)
+    password = _export_password()
+    if has_private_data(request.current_user['id']) and not password:
+        raise SecurityError('包含账号密码的 ZIP 请设置解压密码', 'zip_password_required')
+    output = build_backup(user_id, password)
     return send_file(output, mimetype="application/zip", as_attachment=True, download_name="mynote-full-backup.zip")
 
 
-def _unique_group_name(db, user_id: int, desired: str) -> str:
+def build_backup(user_id, password):
+    manifest = _export_manifest(user_id)
+    output = io.BytesIO()
+    base = Path(current_app.config["UPLOAD_FOLDER"]).resolve()
+    with _zip_writer(output, password) as archive:
+        archive.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8"))
+        # Fixed filenames avoid exposing note titles through the ZIP directory.
+        for index, note in enumerate(manifest['notes'], start=1):
+            if not note['is_deleted']:
+                archive.writestr(f"markdown/{'账号密码/' if note['is_private'] else ''}note-{index}.md", (note['plain_text'] + '\n').encode('utf-8'))
+        for item in manifest["attachments"]:
+            path = (base / item["stored_name"]).resolve()
+            if base in path.parents and path.exists():
+                archive.write(str(path), f"attachments/{item['id']}/{safe_filename_part(item['original_name'], 'image')}")
+    output.seek(0)
+    return output
+
+
+def _unique_group_name(db, user_id: int, desired: str, private=0) -> str:
     base = desired.strip()[:50] or "导入分组"
     candidate = base
     counter = 2
     while db.execute(
-        "SELECT 1 FROM note_groups WHERE user_id = ? AND name = ? COLLATE NOCASE", (user_id, candidate)
+        "SELECT 1 FROM note_groups WHERE user_id = ? AND name = ? COLLATE NOCASE AND is_private = ?", (user_id, candidate, private)
     ).fetchone():
         suffix = f" ({counter})"
         candidate = f"{base[:50-len(suffix)]}{suffix}"
@@ -971,7 +1076,7 @@ def _unique_group_name(db, user_id: int, desired: str) -> str:
 
 
 def _import_manifest(manifest: dict, attachment_files: dict[str, bytes] | None = None) -> tuple[int, int]:
-    if manifest.get("format") != "mynote-backup" or manifest.get("version") != 1:
+    if manifest.get("format") != "mynote-backup" or manifest.get("version") not in (1, 2):
         raise ValueError("不是受支持的 MyNote 备份格式")
     groups = manifest.get("groups")
     notes = manifest.get("notes")
@@ -979,23 +1084,53 @@ def _import_manifest(manifest: dict, attachment_files: dict[str, bytes] | None =
         raise ValueError("备份内容无效或数量过多")
     db = get_db()
     user_id = request.current_user["id"]
+    from .vault import clean_entry, require_vault
+    vault_items = manifest.get('vault_entries', [])
+    if not isinstance(vault_items, list) or len(vault_items) > 20000:
+        raise ValueError('账号密码记录无效或数量过多')
+    vault_items = [clean_entry(item) for item in vault_items]
+    default_name = manifest.get('private_default_group_name', '未分组')
+    if not isinstance(default_name, str) or not 1 <= len(default_name.strip()) <= 50:
+        raise ValueError('默认分组名称无效')
+    default_name = default_name.strip()
+    for item in [*groups, *notes]:
+        if isinstance(item, dict) and item.get('is_private', 0) not in (False, True, 0, 1):
+            raise ValueError('便签区域标记无效')
+    if default_name != '未分组' or vault_items or any(isinstance(item, dict) and item.get('is_private') for item in [*groups, *notes]):
+        require_vault(request.current_user)
+    for item in vault_items:
+        text = '\n'.join([item['title'], '账号：' + item['username'], '密码：' + item['password'],
+                          '网址：' + item['url'], '备注：' + item['notes']])
+        notes = [*notes, {'is_private': 1, 'content_html': plain_to_html(text)}]
     group_map: dict[int, int] = {}
     note_map: dict[int, int] = {}
+    group_spaces = {}
     try:
         for item in groups:
             if not isinstance(item, dict):
                 continue
-            name = _unique_group_name(db, user_id, str(item.get("name", "导入分组")))
+            private = int(bool(item.get("is_private")))
+            name = _unique_group_name(db, user_id, str(item.get("name", "导入分组")), private)
             cursor = db.execute(
-                "INSERT INTO note_groups(user_id, name, sort_order) VALUES (?, ?, ?)",
-                (user_id, name, int(item.get("sort_order", 0))),
+                "INSERT INTO note_groups(user_id, name, sort_order, is_private) VALUES (?, ?, ?, ?)",
+                (user_id, name, int(item.get("sort_order", 0)), private),
             )
             if isinstance(item.get("id"), int):
                 group_map[item["id"]] = cursor.lastrowid
+                group_spaces[item["id"]] = private
+        legacy_default_id = None
+        if 'private_default_group_name' in manifest and (default_name != '未分组' or any(isinstance(item, dict) and item.get('is_private') and item.get('group_id') is None for item in notes)):
+            # Old exports represented this named folder with group_id=NULL.
+            # Materialize it without moving any existing destination notes.
+            name = _unique_group_name(db, user_id, default_name, 1)
+            legacy_default_id = db.execute('INSERT INTO note_groups(user_id, name, is_private, sort_order) VALUES (?, ?, 1, -1)', (user_id, name)).lastrowid
         now = utcnow()
         for item in notes:
             if not isinstance(item, dict):
                 continue
+            private = int(bool(item.get('is_private')))
+            if item.get('group_id') in group_spaces and group_spaces[item['group_id']] != private:
+                raise ValueError('便签与分组不在同一区域')
             content = sanitize_html(str(item.get("content_html", "")))
             legacy_title = str(item.get("title", "")).strip()
             if legacy_title:
@@ -1004,12 +1139,12 @@ def _import_manifest(manifest: dict, attachment_files: dict[str, bytes] | None =
                 """
                 INSERT INTO notes(
                     user_id, group_id, title, content_html, plain_text, is_pinned,
-                    is_deleted, deleted_at, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    is_deleted, deleted_at, created_at, updated_at, is_private
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     user_id,
-                    group_map.get(item.get("group_id")),
+                    legacy_default_id if private and item.get("group_id") is None and legacy_default_id else group_map.get(item.get("group_id")),
                     "",
                     content,
                     html_to_text(content),
@@ -1018,6 +1153,7 @@ def _import_manifest(manifest: dict, attachment_files: dict[str, bytes] | None =
                     item.get("deleted_at") if item.get("is_deleted") else None,
                     item.get("created_at") or now,
                     item.get("updated_at") or now,
+                    private,
                 ),
             )
             if isinstance(item.get("id"), int):
@@ -1062,7 +1198,7 @@ def _import_manifest(manifest: dict, attachment_files: dict[str, bytes] | None =
     except Exception:
         db.rollback()
         raise
-    return len(group_map), len(note_map)
+    return len(group_map) + int(legacy_default_id is not None), len(note_map)
 
 
 @api.post("/import")
@@ -1075,12 +1211,19 @@ def import_notes():
     raw = uploaded.read(32 * 1024 * 1024 + 1)
     if len(raw) > 32 * 1024 * 1024:
         return jsonify(error="导入文件不能超过 32 MB", code="file_too_large"), 413
+    vault_count = 0
     try:
         if suffix == ".json":
             manifest = json.loads(raw.decode("utf-8-sig"))
             group_count, note_count = _import_manifest(manifest)
+            vault_count = len(manifest.get('vault_entries', [])) + sum(bool(item.get('is_private')) for item in manifest['notes'] if isinstance(item, dict))
         elif suffix == ".zip":
-            with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+            with pyzipper.AESZipFile(io.BytesIO(raw)) as archive:
+                password = request.form.get('password', '')
+                if len(password) > 128:
+                    raise ValueError('ZIP 密码过长')
+                if password:
+                    archive.setpassword(password.encode('utf-8'))
                 members = archive.infolist()
                 if len(members) > 10_000 or sum(item.file_size for item in members) > 200 * 1024 * 1024:
                     raise ValueError("备份压缩包内容过多")
@@ -1095,6 +1238,7 @@ def import_notes():
                     raise ValueError("备份中缺少 manifest.json")
                 manifest = json.loads(safe_members["manifest.json"].decode("utf-8-sig"))
                 group_count, note_count = _import_manifest(manifest, safe_members)
+                vault_count = len(manifest.get('vault_entries', [])) + sum(bool(item.get('is_private')) for item in manifest['notes'] if isinstance(item, dict))
         elif suffix in {".txt", ".md", ".markdown"}:
             text = raw.decode("utf-8-sig")
             if suffix in {".md", ".markdown"}:
@@ -1114,6 +1258,8 @@ def import_notes():
             group_count, note_count = 0, 1
         else:
             return jsonify(error="仅支持 TXT、Markdown、JSON 或 MyNote ZIP 备份", code="unsupported_file"), 415
-    except (UnicodeDecodeError, json.JSONDecodeError, zipfile.BadZipFile, ValueError) as exc:
+    except RuntimeError:
+        return jsonify(error='请输入正确的 ZIP 解压密码', code='zip_password_required'), 400
+    except (UnicodeDecodeError, json.JSONDecodeError, zipfile.BadZipFile, pyzipper.BadZipFile, ValueError, NotImplementedError) as exc:
         return jsonify(error=f"导入失败：{exc}", code="invalid_import"), 400
-    return jsonify(ok=True, groups=group_count, notes=note_count)
+    return jsonify(ok=True, groups=group_count, notes=note_count, vault_entries=vault_count)

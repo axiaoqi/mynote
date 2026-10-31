@@ -63,7 +63,7 @@ test('a cursor or selection outside the editor inserts visible link text', () =>
 test('inserted URLs cannot break out of the href attribute', () => {
   const { ctx, calls } = setup('https://example.com/"<b>&', { collapsed: true });
   ctx.insertEditorLink();
-  assert.deepEqual(calls.at(-1), ['insertHTML', false, '<a href="https://example.com/&quot;&lt;b&gt;&amp;">https://example.com/"&lt;b&gt;&amp;</a>']);
+  assert.deepEqual(calls.at(-1), ['insertHTML', false, '<a href="https://example.com/&quot;&lt;b&gt;&amp;">https://example.com/&quot;&lt;b&gt;&amp;</a>']);
 });
 
 test('cancelled, empty and invalid addresses never change the document', () => {

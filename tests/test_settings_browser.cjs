@@ -14,6 +14,39 @@ const html = read('templates/index.html')
 const script = read('static/app.js')
   .replace(/bindEvents\(\);\s*bindSecurityEvents\(\);\s*bootstrap\(\);\s*$/, '');
 
+test('dialog cancel and close bypass required fields and Escape never reuses a prior confirmation', async () => {
+  const browser = await chromium.launch({ channel: 'msedge', headless: true });
+  try {
+    for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 }]) {
+      const page = await browser.newPage({ viewport });
+      await page.setContent(html);
+      await page.addStyleTag({ path: path.join(root, 'static/styles.css') });
+      await page.addScriptTag({ content: script });
+      async function openInput() {
+        await page.evaluate(() => { window.inputResult = 'pending'; askInput('新建分组').then(value => { window.inputResult = value; }); });
+      }
+      await openInput();
+      await page.locator('#input-dialog-confirm').click();
+      assert.equal(await page.locator('#input-dialog').evaluate(el => el.open), true, 'confirm still validates the required name');
+      await page.locator('#input-dialog .secondary-button').click();
+      await page.waitForFunction(() => window.inputResult === null);
+      assert.equal(await page.locator('#input-dialog').evaluate(el => el.open), false);
+      await openInput();
+      await page.locator('#input-dialog .dialog-close').click();
+      await page.waitForFunction(() => window.inputResult === null);
+      await openInput();
+      await page.locator('#input-dialog-field').fill('测试分组');
+      await page.locator('#input-dialog-confirm').click();
+      await page.waitForFunction(() => window.inputResult === '测试分组');
+      await openInput();
+      await page.locator('#input-dialog-field').fill('不要创建');
+      await page.keyboard.press('Escape');
+      await page.waitForFunction(() => window.inputResult === null);
+      await page.close();
+    }
+  } finally { await browser.close(); }
+});
+
 for (const viewport of [{ width: 1280, height: 800 }, { width: 1440, height: 1080 }, { width: 390, height: 844 }, { width: 844, height: 390 }]) {
   test(`settings switches preserve the close button at ${viewport.width}x${viewport.height}`, async () => {
     const browser = await chromium.launch({ channel: 'msedge', headless: true });

@@ -76,6 +76,8 @@
 
   <main id="app" class="app hidden">
     <div id="workspace" class="workspace" data-mobile-view="list">
+      <div id="sidebar-resizer" class="pane-resizer" role="separator" aria-label="调整分组栏宽度" aria-orientation="vertical" tabindex="0"></div>
+      <div id="list-resizer" class="pane-resizer" role="separator" aria-label="调整便签列表宽度" aria-orientation="vertical" tabindex="0"></div>
       <aside class="sidebar pane" aria-label="便签导航">
         <div class="sidebar-brand">
           <span class="mini-mark"><img src="{{ url_for('static', filename='icons/icon-192x192.png', v='3') }}" alt=""></span>
@@ -90,16 +92,30 @@
         </nav>
 
         <div class="section-heading group-section-heading">
-          <span class="group-heading-label">
+          <button id="groups-toggle" class="group-heading-label" type="button" aria-expanded="true" aria-controls="group-list">
             <svg class="folder-icon" viewBox="0 0 20 18" aria-hidden="true"><path d="M2.5 4.5h5l1.7 2h8.3v8.75H2.5zM2.5 4.5V2.75h5.3"></path></svg>
             <span>分组</span>
             <span class="group-heading-caret" aria-hidden="true"></span>
-          </span>
+          </button>
           <button id="new-group-button" class="tiny-button group-add-button" type="button" title="新建分组" aria-label="新建分组">
             <svg class="group-add-icon" viewBox="0 0 18 18" aria-hidden="true"><path d="M4.5 9h9M9 4.5v9"></path></svg>
           </button>
         </div>
         <div id="group-list" class="group-list" aria-label="便签分组"></div>
+        <div class="section-heading private-section-heading">
+          <div class="private-heading-label">
+            <button id="vault-open" class="private-heading-button" type="button"><span aria-hidden="true">⚿</span> 账号密码</button>
+            <button id="private-toggle" class="section-toggle-button" type="button" aria-label="展开账号密码分组" aria-expanded="false" aria-controls="private-navigation"><span class="group-heading-caret" aria-hidden="true"></span></button>
+          </div>
+          <button id="private-new-group" class="tiny-button group-add-button" type="button" title="在账号密码中新建分组" aria-label="在账号密码中新建分组">
+            <svg class="group-add-icon" viewBox="0 0 18 18" aria-hidden="true"><path d="M4.5 9h9M9 4.5v9"></path></svg>
+          </button>
+        </div>
+        <div id="private-navigation" class="hidden">
+          <div id="private-group-list" class="group-list" aria-label="账号密码分组"></div>
+          <button class="nav-item" data-area="private" data-view="trash" type="button"><svg class="folder-icon group-folder-icon" viewBox="0 0 20 18" aria-hidden="true"><path d="M4 4.5h12M7 4.5V2.5h6v2M5 4.5l1 11h8l1-11M8 7v6M12 7v6"></path></svg><span>回收站</span></button>
+          <button id="private-lock" class="nav-item" type="button"><svg class="folder-icon group-folder-icon" viewBox="0 0 20 18" aria-hidden="true"><rect x="4" y="7.5" width="12" height="9" rx="1.5"></rect><path d="M7 7.5V5a3 3 0 0 1 6 0v2.5M10 11v2"></path></svg><span>锁定账号密码</span></button>
+        </div>
         <div id="group-action-menu" class="group-action-menu hidden" role="menu" aria-label="分组操作">
           <button class="group-menu-item" id="group-menu-rename" type="button" role="menuitem">
             <svg viewBox="0 0 18 18" aria-hidden="true"><path d="m3 12.5-.5 3 3-.5 8.2-8.2-2.5-2.5zM10.5 5l2.5 2.5"></path></svg>
@@ -218,18 +234,18 @@
 
   <dialog id="input-dialog" class="modal small-modal">
     <form method="dialog" id="input-dialog-form">
-      <div class="modal-header"><h3 id="input-dialog-title">新建分组</h3><button value="cancel" class="dialog-close" aria-label="关闭">×</button></div>
+      <div class="modal-header"><h3 id="input-dialog-title">新建分组</h3><button type="submit" value="cancel" formnovalidate class="dialog-close" aria-label="关闭">×</button></div>
       <label id="input-dialog-label">名称<input id="input-dialog-field" maxlength="50" required></label>
       <p id="input-dialog-error" class="form-error"></p>
-      <div class="modal-actions"><button value="cancel" class="secondary-button">取消</button><button id="input-dialog-confirm" value="default" class="primary-button">确定</button></div>
+      <div class="modal-actions"><button type="submit" value="cancel" formnovalidate class="secondary-button">取消</button><button id="input-dialog-confirm" value="default" class="primary-button">确定</button></div>
     </form>
   </dialog>
 
   <dialog id="confirm-dialog" class="modal small-modal">
     <form method="dialog">
-      <div class="modal-header"><h3 id="confirm-title">确认操作</h3><button value="cancel" class="dialog-close" aria-label="关闭">×</button></div>
+      <div class="modal-header"><h3 id="confirm-title">确认操作</h3><button type="submit" value="cancel" formnovalidate class="dialog-close" aria-label="关闭">×</button></div>
       <p id="confirm-message" class="confirm-message"></p>
-      <div class="modal-actions"><button value="cancel" class="secondary-button">取消</button><button id="confirm-button" value="confirm" class="primary-button danger-fill">确认</button></div>
+      <div class="modal-actions"><button type="submit" value="cancel" formnovalidate class="secondary-button">取消</button><button id="confirm-button" value="confirm" class="primary-button danger-fill">确认</button></div>
     </form>
   </dialog>
 
@@ -289,10 +305,35 @@
         <div class="settings-buttons">
           <button id="import-button" class="secondary-button" type="button">导入文件</button>
           <input id="import-input" type="file" accept=".txt,.md,.markdown,.json,.zip" hidden>
-          <a class="secondary-button link-button" href="/api/export/markdown">导出 Markdown</a>
-          <a class="secondary-button link-button" href="/api/export/json">导出 JSON</a>
-          <a class="primary-button link-button" href="/api/export/backup">完整 ZIP 备份</a>
+          <button class="secondary-button" type="button" data-export="markdown">导出 Markdown</button>
+          <button class="secondary-button" type="button" data-export="json">导出 JSON</button>
+          <button class="primary-button" type="button" data-export="backup">完整 ZIP 备份</button>
         </div>
+      </section>
+      <section class="settings-section">
+        <h4>账号密码</h4>
+        <p>使用独立密码访问，连续 5 分钟未使用后自动锁定。里面可正常新建分组和便签，使用现有富文本编辑器，内容正常参与导出。</p>
+        <button id="vault-settings-open" class="secondary-button" type="button">设置独立访问密码</button>
+      </section>
+      <section class="settings-section">
+        <h4>自动备份</h4>
+        <p>服务器运行期间自动生成加密 ZIP。时间按北京时间计算；停机错过的备份将在启动后补做一次。</p>
+        <form id="backup-form" class="settings-form stacked-form">
+          <label class="inline-check"><input name="enabled" type="checkbox">启用自动备份</label>
+          <div class="field-grid">
+            <label>备份时间<input name="time_of_day" type="time" value="03:00" required></label>
+            <label>每隔几天<input name="interval_days" type="number" min="1" max="30" value="1" required></label>
+            <label>保留天数（最多 30 天）<input name="retention_days" type="number" min="1" max="30" value="30" required></label>
+          </div>
+          <label id="backup-current-password-label" class="hidden">原 ZIP 解压密码<input name="current_password" type="password" autocomplete="off" maxlength="128" placeholder="仅修改 ZIP 密码时填写"></label>
+          <label>ZIP 解压密码<input name="password" type="password" autocomplete="new-password" minlength="8" maxlength="128" placeholder="首次必填；留空保留原密码"></label>
+          <label>确认 ZIP 密码<input name="confirm_password" type="password" autocomplete="new-password" maxlength="128" placeholder="修改密码时请再次输入"></label>
+          <p id="backup-password-status" aria-live="polite"></p>
+          <p>文件保存于 <span id="backup-directory">instance/backups/用户名_账号编号/</span>，可由脚本同步到电脑。调小保留天数会清理过期备份；改密码只影响新备份。</p>
+          <p id="backup-status" aria-live="polite"></p>
+          <div class="settings-buttons"><button class="primary-button" type="submit">保存备份设置</button><button id="backup-now" class="secondary-button" type="button">立即备份</button><button id="backup-refresh" class="secondary-button" type="button">刷新备份列表</button></div>
+        </form>
+        <div id="backup-files" class="backup-files"></div>
       </section>
       <section id="admin-section" class="settings-section hidden">
         <h4>家庭账号管理</h4>
@@ -305,6 +346,49 @@
     </div>
   </dialog>
 
+  <dialog id="vault-dialog" class="modal settings-modal">
+    <div class="modal-header"><h3>账号密码</h3><button id="vault-close" class="dialog-close" type="button" aria-label="关闭">×</button></div>
+    <div class="settings-body">
+      <p id="vault-status" aria-live="polite">正在读取状态…</p>
+      <form id="vault-unlock-form" class="settings-form stacked-form hidden">
+        <label>独立访问密码<input name="password" type="password" autocomplete="off" maxlength="128" required></label>
+        <button class="primary-button" type="submit">解锁并进入</button>
+      </form>
+      <details id="vault-password-panel" class="settings-section">
+        <summary>设置 / 修改访问密码</summary>
+        <form id="vault-password-form" class="settings-form stacked-form">
+          <label id="vault-account-proof">当前登录密码<input name="current_password" type="password" autocomplete="current-password" maxlength="128"></label>
+          <label id="vault-old-proof">当前访问密码<input name="password" type="password" autocomplete="off" maxlength="128"></label>
+          <label>新访问密码<input name="new_password" type="password" autocomplete="new-password" minlength="8" maxlength="128" required></label>
+          <label>确认新访问密码<input name="confirm_password" type="password" autocomplete="new-password" minlength="8" maxlength="128" required></label>
+          <button class="secondary-button" type="submit">保存访问密码</button>
+        </form>
+      </details>
+    </div>
+  </dialog>
+
+  <dialog id="export-dialog" class="modal small-modal">
+    <form id="export-form">
+      <div class="modal-header"><h3 id="export-title">导出备份</h3><button id="export-close" class="dialog-close" type="button" aria-label="关闭">×</button></div>
+      <p id="export-tip" class="confirm-message"></p>
+      <div id="export-password-fields">
+        <label>ZIP 解压密码<input name="password" type="password" autocomplete="new-password" minlength="8" maxlength="128"></label>
+        <label>确认密码<input name="confirm_password" type="password" autocomplete="new-password" maxlength="128"></label>
+      </div>
+      <p class="form-error" aria-live="polite"></p>
+      <div class="modal-actions"><button class="primary-button" type="submit">下载</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="zip-password-dialog" class="modal small-modal">
+    <form id="zip-password-form">
+      <div class="modal-header"><h3>输入 ZIP 解压密码</h3><button id="zip-password-close" class="dialog-close" type="button" aria-label="取消">×</button></div>
+      <p id="zip-password-tip" class="confirm-message" aria-live="polite"></p>
+      <label>解压密码<input name="password" type="password" autocomplete="off" maxlength="128" required></label>
+      <div class="modal-actions"><button class="primary-button" type="submit">导入</button></div>
+    </form>
+  </dialog>
+
   <dialog id="conflict-dialog" class="modal small-modal">
     <div class="modal-header"><h3>发现其他设备的修改</h3></div>
     <p class="confirm-message">这条便签已在其他页面修改或删除。请选择载入服务器版本，或把本机内容保存成一条新便签。若原便签已永久删除，载入服务器版本将关闭当前便签。</p>
@@ -313,5 +397,7 @@
 
   <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
   <script src="{{ url_for('static', filename='app.js', v=asset_version('app.js')) }}" defer></script>
+  <script src="{{ url_for('static', filename='secure-data.js', v=asset_version('secure-data.js')) }}" defer></script>
+  <script src="{{ url_for('static', filename='layout.js', v=asset_version('layout.js')) }}" defer></script>
 </body>
 </html>

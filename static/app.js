@@ -7,6 +7,10 @@ const state = {
   csrf: $("meta[name='csrf-token']").content,
   user: null,
   groups: [],
+  area: "normal",
+  normalGroups: [],
+  privateGroups: [],
+  privateNavigationUnlocked: false,
   notes: [],
   currentGroup: "home",
   currentNote: null,
@@ -24,6 +28,24 @@ const state = {
 };
 
 const syncState = { revision: null, busy: false, writes: 0, mutation: 0, timer: null, channel: null };
+const navigationState = { groupsCollapsed: false, privateCollapsed: false };
+
+function saveNavigationState() {
+  try { localStorage.setItem("mynote-navigation", JSON.stringify(navigationState)); } catch (_) {}
+}
+
+function renderNavigation() {
+  const groupsButton = $("#groups-toggle"), privateButton = $("#private-toggle");
+  els.groups.classList.toggle("hidden", navigationState.groupsCollapsed);
+  if (groupsButton) groupsButton.setAttribute("aria-expanded", String(!navigationState.groupsCollapsed));
+  const privateOpen = state.privateNavigationUnlocked && !navigationState.privateCollapsed;
+  if ($("#private-navigation")) $("#private-navigation").classList.toggle("hidden", !privateOpen);
+  if (privateButton) {
+    privateButton.setAttribute("aria-expanded", String(Boolean(privateOpen)));
+    privateButton.setAttribute("aria-label", privateOpen ? "收起账号密码分组" : "展开账号密码分组");
+  }
+  if ($("#vault-open")) $("#vault-open").classList.toggle("active", state.area === "private" && state.currentGroup === "all");
+}
 
 let openGroupActionId = null;
 let openGroupActionButton = null;
@@ -57,6 +79,9 @@ class ApiError extends Error {
 }
 
 async function api(url, options = {}) {
+  const requestEpoch = state.sessionEpoch;
+  const scoped = /^\/api\/(groups|notes|trash|sync)(?:[/?]|$)/.test(url);
+  if (scoped && state.area === "private") url += `${url.includes("?") ? "&" : "?"}space=private`;
   const method = options.method || "GET";
   const writing = method !== "GET" && method !== "HEAD";
   if (writing) { syncState.writes++; syncState.mutation++; }
@@ -76,8 +101,11 @@ async function api(url, options = {}) {
     }
     const type = response.headers.get("content-type") || "";
     const data = type.includes("application/json") ? await response.json() : null;
+    if (response.ok && scoped && requestEpoch !== state.sessionEpoch) throw new ApiError("页面已切换，请重试", 0, { code: "stale_response" });
+    if (response.ok && /^\/api\/notes(?:[/?]|$)/.test(url) && data && Object.hasOwn(data, "vault_expires_at") && typeof syncPrivateExpiry === "function") syncPrivateExpiry(data.vault_expires_at);
     if (data?.csrf_token) state.csrf = data.csrf_token;
     if (!response.ok) {
+      if (data?.code === "vault_locked" && typeof lockPrivateArea === "function") lockPrivateArea(false);
       if (response.status === 401 && url !== "/api/login") {
         // Revoked/expired cookies need a fresh CSRF token before the next login.
         try { await api("/api/session"); } catch (_) {}
@@ -97,7 +125,7 @@ async function api(url, options = {}) {
 function escapeHtml(value = "") {
   const div = document.createElement("div");
   div.textContent = value;
-  return div.innerHTML;
+  return div.innerHTML.replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 
 function toast(message, kind = "normal") {
@@ -161,7 +189,8 @@ function bindMobileNavigation(cancelNoteSwipe) {
     gesture = null;
     if (previous && workspace.hasPointerCapture(previous.pointerId)) workspace.releasePointerCapture(previous.pointerId);
   };
-  const canNavigate = () => isMobile() && !state.composing && !document.querySelector("dialog[open]");
+  const canNavigate = () => isMobile() && !state.composing && workspace.dataset.groupDragging !== "true" && !document.querySelector("dialog[open]");
+  workspace.addEventListener("groupdragstart", cancel);
 
   workspace.addEventListener("pointerdown", event => {
     if (!event.isPrimary) { cancel(); return; }
@@ -256,6 +285,7 @@ function switchAuth(tab) {
 }
 
 function showAuth() {
+  if (typeof clearSensitiveUi === "function") clearSensitiveUi();
   state.sessionEpoch++;
   clearTimeout(syncState.timer);
   syncState.revision = null;
@@ -274,6 +304,10 @@ async function enterApp(user) {
   state.sessionEpoch++;
   syncState.revision = null;
   state.currentNote = null;
+  state.area = "normal";
+  state.normalGroups = [];
+  state.privateGroups = [];
+  state.privateNavigationUnlocked = false;
   state.localConflictDraft = null;
   state.conflictServer = null;
   state.composing = false;
@@ -302,7 +336,7 @@ function scheduleSync(delay = 4000) {
 
 function syncContext() {
   return JSON.stringify([state.sessionEpoch, state.user?.id, state.currentGroup, state.search,
-    state.currentNote?.id, state.currentNote?.version, state.editRevision, syncState.mutation]);
+    state.currentNote?.id, state.currentNote?.version, state.editRevision, syncState.mutation, els.workspace.dataset?.groupDragging]);
 }
 
 function noteChanged(note) {
@@ -325,6 +359,7 @@ function showEditConflict(note) {
 async function checkSync() {
   if (syncState.busy) { scheduleSync(); return; }
   if (!state.user || document.visibilityState === "hidden" || syncState.writes || state.savePromise
+      || els.workspace.dataset?.groupDragging === "true"
       || state.composing || state.localConflictDraft || document.querySelector("dialog[open]")) {
     scheduleSync(); return;
   }
@@ -339,9 +374,9 @@ async function checkSync() {
     if (marker.user_id !== state.user.id) { showAuth(); return; }
     if (marker.revision === syncState.revision) return;
     const { groups } = await api("/api/groups", options);
-    const groupExists = ["home", "trash"].includes(state.currentGroup)
+    const groupExists = ["home", "trash", ...(state.area === "private" ? ["all"] : [])].includes(state.currentGroup)
       || groups.some(group => String(group.id) === String(state.currentGroup));
-    const view = groupExists ? state.currentGroup : "home";
+    const view = groupExists ? state.currentGroup : state.area === "private" ? "all" : "home";
     const params = noteListParams(view);
     const { notes } = await api(`/api/notes?${params}`, options);
     let note = null;
@@ -359,6 +394,8 @@ async function checkSync() {
     }
     const changed = noteChanged(note);
     state.groups = groups;
+    if (state.area === "private") state.privateGroups = groups;
+    else state.normalGroups = groups;
     state.notes = notes;
     state.currentGroup = view;
     if (changed) {
@@ -386,17 +423,22 @@ async function checkSync() {
 function persistLocation() {
   const params = new URLSearchParams();
   params.set("group", String(state.currentGroup));
+  if (state.area === "private") params.set("space", "private");
   if (state.currentNote) params.set("note", String(state.currentNote.id));
   history.replaceState(null, "", `${location.pathname}${location.search}#${params}`);
 }
 
 async function restoreLocation() {
   const params = new URLSearchParams(location.hash.replace(/^#/, ""));
+  if (params.get("space") === "private") {
+    await selectView("home", false, false); persistLocation(); mobileView("list"); return;
+  }
   const noteId = Number(params.get("note"));
   if (Number.isInteger(noteId) && noteId > 0) {
     try {
       const data = await api(`/api/notes/${noteId}`);
       const note = data.note;
+      if (note.is_private) { await selectView("home", false); return; }
       const view = note.is_deleted ? "trash" : note.group_id ?? "home";
       await selectView(view, false, false);
       state.currentNote = note;
@@ -406,7 +448,7 @@ async function restoreLocation() {
       mobileView("editor");
       return;
     } catch (error) {
-      if (error.status !== 404) throw error;
+      if (![404, 423].includes(error.status)) throw error;
     }
   }
   const requested = params.get("group");
@@ -459,23 +501,29 @@ async function loadGroups() {
   if (epoch !== state.sessionEpoch) return;
   syncState.revision = null;
   state.groups = data.groups;
+  if (state.area === "private") state.privateGroups = data.groups;
+  else state.normalGroups = data.groups;
   renderGroups();
   renderGroupSelect();
 }
 
 function renderGroups() {
+  if (typeof cancelGroupDrag === "function") cancelGroupDrag();
   closeGroupActionMenu();
-  els.groups.innerHTML = state.groups.map(group => `
+  const groupMarkup = (groups, area) => groups.map(group => `
     <div class="group-row" data-group-row="${group.id}">
-      <button class="nav-item ${String(state.currentGroup) === String(group.id) ? "active" : ""}" data-view="${group.id}" type="button">
+      <button class="nav-item ${state.area === area && String(state.currentGroup) === String(group.id) ? "active" : ""}" data-area="${area}" data-view="${group.id}" type="button">
         <svg class="folder-icon group-folder-icon" viewBox="0 0 20 18" aria-hidden="true"><path d="M2.5 4.5h5l1.7 2h8.3v8.75H2.5zM2.5 4.5V2.75h5.3"></path></svg>
-        <span class="group-name">${escapeHtml(group.name)}</span>
+        <span class="group-name" title="${escapeHtml(group.name)}">${escapeHtml(group.name)}</span>
       </button>
       <button class="group-more-button" data-group-more="${group.id}" type="button" title="更多操作" aria-label="${escapeHtml(group.name)}的更多操作" aria-haspopup="menu" aria-controls="group-action-menu" aria-expanded="false">
         <svg viewBox="0 0 18 18" aria-hidden="true"><circle cx="4" cy="9" r="1"></circle><circle cx="9" cy="9" r="1"></circle><circle cx="14" cy="9" r="1"></circle></svg>
       </button>
     </div>`).join("");
-  $$(".nav-item[data-view]").forEach(button => button.classList.toggle("active", String(button.dataset.view) === String(state.currentGroup)));
+  els.groups.innerHTML = groupMarkup(state.area === "private" ? state.normalGroups : state.groups, "normal");
+  if ($("#private-group-list")) $("#private-group-list").innerHTML = groupMarkup(state.area === "private" ? state.groups : state.privateGroups || [], "private");
+  renderNavigation();
+  $$(".nav-item[data-view]").forEach(button => button.classList.toggle("active", (button.dataset.area || "normal") === (state.area || "normal") && String(button.dataset.view) === String(state.currentGroup)));
 }
 
 function closeGroupActionMenu(restoreFocus = false) {
@@ -514,12 +562,15 @@ function toggleGroupActionMenu(groupId, button) {
 
 function renderGroupSelect() {
   const selected = state.dirty ? els.groupSelect.value : state.currentNote?.group_id ?? "";
-  els.groupSelect.innerHTML = `<option value="">首页</option>${state.groups.map(group => `<option value="${group.id}">${escapeHtml(group.name)}</option>`).join("")}`;
+  const privateNote = state.currentNote?.is_private;
+  const groups = privateNote && state.area !== "private" ? state.privateGroups : state.groups;
+  els.groupSelect.innerHTML = `<option value="">${state.area === "private" || privateNote ? "未分组" : "首页"}</option>${groups.map(group => `<option value="${group.id}">${escapeHtml(group.name)}</option>`).join("")}`;
   els.groupSelect.value = selected;
 }
 
 function viewTitle(view) {
-  if (view === "home") return "首页";
+  if (view === "all" && state.area === "private") return "账号密码";
+  if (view === "home") return state.area === "private" ? "未分组" : "首页";
   if (view === "trash") return "回收站";
   return state.groups.find(group => String(group.id) === String(view))?.name || "便签";
 }
@@ -539,6 +590,20 @@ async function selectView(view, save = true, updateLocation = true) {
   await loadNotes();
   mobileView("list");
   if (updateLocation) persistLocation();
+}
+
+async function selectArea(area, view = "home") {
+  if (area === "private" && state.area !== "private") {
+    if (typeof enterPrivateArea === "function") await enterPrivateArea(view);
+    return;
+  }
+  if (state.area !== area) {
+    if (!(await flushSave())) return;
+    state.sessionEpoch++; state.area = area;
+    state.currentNote = null; state.notes = []; state.groups = state.normalGroups;
+    clearEditor(); await loadGroups();
+  }
+  await selectView(view);
 }
 
 function noteListParams(view = state.currentGroup) {
@@ -577,7 +642,7 @@ function renderNotes() {
         <p>${escapeHtml(remainder)}</p>
         <div class="note-card-meta">
           <time datetime="${escapeHtml(note.updated_at)}">${formatTime(note.updated_at)}</time>
-          ${state.search ? `<span class="note-card-group" title="${escapeHtml(viewTitle(note.group_id ?? "home"))}">${escapeHtml(viewTitle(note.group_id ?? "home"))}</span>` : ""}
+          ${state.search || state.currentGroup === "all" ? `<span class="note-card-group">${escapeHtml(note.is_private ? `账号密码 / ${note.group_name || "未分组"}` : viewTitle(note.group_id ?? "home"))}</span>` : ""}
         </div>
       </article>
     </div>`;
@@ -603,7 +668,13 @@ async function selectNote(noteId) {
   if (state.currentNote?.id === noteId) { mobileView("editor"); return; }
   if (!(await flushSave())) return;
   try {
+    const epoch = state.sessionEpoch;
     const data = await api(`/api/notes/${noteId}`);
+    if (epoch !== state.sessionEpoch) return;
+    if (data.note.is_private && state.area !== "private") {
+      state.privateGroups = (await api("/api/groups?space=private")).groups;
+      if (epoch !== state.sessionEpoch) return;
+    }
     state.currentNote = data.note;
     renderEditor();
     renderNotes();
@@ -618,6 +689,7 @@ function renderEditor() {
   state.editRevision++;
   const note = state.currentNote;
   if (!note) return clearEditor();
+  renderGroupSelect();
   els.editorEmpty.classList.add("hidden");
   els.editorShell.classList.remove("hidden");
   els.content.innerHTML = note.content_html || "";
@@ -641,13 +713,15 @@ function updatePinButton(pinned) {
 }
 
 async function newNote() {
-  if (state.currentGroup === "trash") await selectView("home");
+  if (state.currentGroup === "trash") await selectView(state.area === "private" ? "all" : "home");
   if (!(await flushSave())) return;
   const groupId = /^\d+$/.test(String(state.currentGroup)) ? Number(state.currentGroup) : null;
   try {
+    const epoch = state.sessionEpoch;
     const data = await api("/api/notes", { method: "POST", body: { group_id: groupId } });
     state.notes.unshift({ ...data.note, preview: "" });
     await loadGroups();
+    if (epoch !== state.sessionEpoch) return;
     state.currentNote = data.note;
     renderNotes();
     renderEditor();
@@ -676,6 +750,7 @@ function currentDraft() {
     group_id: els.groupSelect.value ? Number(els.groupSelect.value) : null,
     is_pinned: els.pin.classList.contains("active"),
     version: state.currentNote.version,
+    is_private: Boolean(state.currentNote.is_private),
   };
 }
 
@@ -764,6 +839,7 @@ function askInput(title, initial = "", maxLength = 50) {
     els.inputDialogField.value = initial;
     els.inputDialogField.maxLength = maxLength;
     els.inputDialogError.textContent = "";
+    els.inputDialog.returnValue = "cancel";
     els.inputDialog.showModal();
     setTimeout(() => { els.inputDialogField.focus(); els.inputDialogField.select(); }, 0);
     const close = () => { els.inputDialog.removeEventListener("close", close); resolve(els.inputDialog.returnValue === "default" ? els.inputDialogField.value.trim() : null); };
@@ -776,6 +852,7 @@ function confirmAction(title, message, confirmLabel = "确认") {
     els.confirmTitle.textContent = title;
     els.confirmMessage.textContent = message;
     $("#confirm-button").textContent = confirmLabel;
+    els.confirmDialog.returnValue = "cancel";
     els.confirmDialog.showModal();
     const close = () => { els.confirmDialog.removeEventListener("close", close); resolve(els.confirmDialog.returnValue === "confirm"); };
     els.confirmDialog.addEventListener("close", close);
@@ -794,6 +871,8 @@ async function createGroup() {
 }
 
 async function renameGroup(groupId) {
+  if (state.area === "private" && state.normalGroups.some(group => group.id === groupId)) await selectArea("normal");
+  else if (state.area !== "private" && state.privateGroups.some(group => group.id === groupId)) await selectArea("private", groupId);
   const group = state.groups.find(item => item.id === groupId);
   if (!group) return;
   const name = await askInput("重命名分组", group.name);
@@ -805,11 +884,13 @@ async function renameGroup(groupId) {
 }
 
 async function deleteGroup(groupId) {
+  if (state.area === "private" && state.normalGroups.some(group => group.id === groupId)) await selectArea("normal");
+  else if (state.area !== "private" && state.privateGroups.some(group => group.id === groupId)) await selectArea("private", groupId);
   const group = state.groups.find(item => item.id === groupId);
-  if (!group || !(await confirmAction("删除分组", `确定删除“${group.name}”吗？其中的便签会移到“首页”。`, "删除"))) return;
+  if (!group || !(await confirmAction("删除分组", `确定删除“${group.name}”吗？其中的便签会移到“${state.area === "private" ? "未分组" : "首页"}”。`, "删除"))) return;
   try {
     await api(`/api/groups/${groupId}`, { method: "DELETE" });
-    if (String(state.currentGroup) === String(groupId)) state.currentGroup = "home";
+    if (String(state.currentGroup) === String(groupId)) state.currentGroup = state.area === "private" ? "all" : "home";
     if (state.currentNote?.group_id === groupId) state.currentNote.group_id = null;
     await loadGroups(); await selectView(state.currentGroup, false);
   } catch (error) { toast(error.message, "error"); }
@@ -881,6 +962,7 @@ async function openSettings() {
   $("#profile-form input[name='display_name']").value = state.user.display_name;
   els.settings.showModal();
   await refreshMfa();
+  if (typeof refreshBackupSettings === "function") await refreshBackupSettings();
   els.adminSection.classList.toggle("hidden", !state.user.is_admin);
   if (state.user.is_admin) {
     try {
@@ -905,9 +987,21 @@ async function importFile(file) {
   const form = new FormData(); form.append("file", file);
   toast("正在导入，请稍候…");
   try {
-    const data = await api("/api/import", { method: "POST", body: form });
+    let data;
+    try { data = await api("/api/import", { method: "POST", body: form }); }
+    catch (error) {
+      let failure = error;
+      while (!data) {
+        if (failure.code !== "zip_password_required" || typeof askZipPassword !== "function") throw failure;
+        const password = await askZipPassword(failure.message);
+        if (password === null) return;
+        form.set("password", password);
+        try { data = await api("/api/import", { method: "POST", body: form }); }
+        catch (retryError) { failure = retryError; }
+      }
+    }
     await loadGroups(); await loadNotes();
-    toast(`导入完成：${data.notes} 条便签，${data.groups} 个分组`);
+    toast(`导入完成：${data.notes} 条便签，${data.groups} 个分组${data.vault_entries ? `，${data.vault_entries} 条账号密码` : ""}`);
   } catch (error) { toast(error.message, "error"); }
   finally { els.importInput.value = ""; }
 }
@@ -951,6 +1045,16 @@ function insertEditorLink() {
 }
 
 function bindEvents() {
+  try {
+    const saved = JSON.parse(localStorage.getItem("mynote-navigation") || "{}");
+    navigationState.groupsCollapsed = saved.groupsCollapsed === true;
+    navigationState.privateCollapsed = saved.privateCollapsed === true;
+  } catch (_) {}
+  $("#groups-toggle").addEventListener("click", () => {
+    navigationState.groupsCollapsed = !navigationState.groupsCollapsed;
+    saveNavigationState(); closeGroupActionMenu(); renderNavigation();
+  });
+  renderNavigation();
   const swipeWidth = 78;
   let swipeGesture = null;
   let openSwipeRow = null;
@@ -1014,8 +1118,9 @@ function bindEvents() {
       return;
     }
     if (!event.target.closest("#group-action-menu")) closeGroupActionMenu();
-    const view = event.target.closest("[data-view]")?.dataset.view;
-    if (view !== undefined) selectView(/^\d+$/.test(view) ? Number(view) : view);
+    const viewButton = event.target.closest("[data-view]");
+    const view = viewButton?.dataset.view;
+    if (view !== undefined) selectArea(viewButton.dataset.area || "normal", /^\d+$/.test(view) ? Number(view) : view);
     const noteCard = event.target.closest("[data-note-id]");
     if (noteCard) {
       const row = noteCard.closest("[data-swipe-row]");
@@ -1077,7 +1182,10 @@ function bindEvents() {
   els.noteList.addEventListener("scroll", () => closeSwipeRow(), { passive: true });
   $("#new-note-button").addEventListener("click", newNote);
   $("#empty-new-note").addEventListener("click", newNote);
-  $("#new-group-button").addEventListener("click", createGroup);
+  $("#new-group-button").addEventListener("click", async () => {
+    navigationState.groupsCollapsed = false; saveNavigationState(); renderNavigation();
+    await selectArea("normal"); if (state.area === "normal") await createGroup();
+  });
   $("#delete-note-button").addEventListener("click", trashCurrent);
   $("#restore-note-button").addEventListener("click", restoreCurrent);
   $("#permanent-delete-button").addEventListener("click", permanentDelete);
@@ -1183,12 +1291,13 @@ function bindEvents() {
   $("#conflict-copy").addEventListener("click", async () => {
     const draft = state.localConflictDraft; if (!draft) return;
     try {
-      const { groups } = await api("/api/groups");
+      const scope = draft.is_private ? "?space=private" : "";
+      const { groups } = await api(`/api/groups${scope}`);
       const groupId = groups.some(group => group.id === draft.group_id) ? draft.group_id : null;
-      const data = await api("/api/notes", { method: "POST", body: { content_html: `<p><strong>冲突副本</strong></p>${draft.content_html}`, group_id: groupId } });
+      const data = await api(`/api/notes${scope}`, { method: "POST", body: { content_html: `<p><strong>冲突副本</strong></p>${draft.content_html}`, group_id: groupId } });
       els.conflict.close(); state.conflictServer = null; state.localConflictDraft = null;
       state.currentNote = data.note; renderEditor();
-      if (!["home", "trash"].includes(state.currentGroup) && !groups.some(group => String(group.id) === String(state.currentGroup))) state.currentGroup = "home";
+      if (!["home", "trash", "all"].includes(state.currentGroup) && !groups.some(group => String(group.id) === String(state.currentGroup))) state.currentGroup = state.area === "private" ? "all" : "home";
       await loadNotes(); persistLocation(); syncState.revision = null; scheduleSync(0); toast("本机内容已保存为新便签");
     } catch (error) { toast(error.message, "error"); }
   });

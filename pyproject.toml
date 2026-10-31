@@ -12,6 +12,7 @@ dependencies = [
     "pyotp==2.9.0",
     "cryptography>=46,<50",
     "qrcode>=8.2,<9",
+    "pyzipper>=0.4,<1",
 ]
 
 [dependency-groups]
